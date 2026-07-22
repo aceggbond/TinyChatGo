@@ -11,5 +11,4 @@ hfsgo.json
 # Local tooling and screenshots
 .agents/
 .codex/
-SnowShot_*.png
 gui-preview.png
