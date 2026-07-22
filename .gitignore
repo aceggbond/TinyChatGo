@@ -1,0 +1,15 @@
+# Build outputs
+*.exe
+*.test
+
+# Go build cache
+.gocache/
+
+# Runtime state (may contain local shared paths)
+hfsgo.json
+
+# Local tooling and screenshots
+.agents/
+.codex/
+SnowShot_*.png
+gui-preview.png
