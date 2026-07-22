@@ -2,7 +2,7 @@
 
 ## 界面预览
 
-![HFS Go Windows 界面](SnowShot_2026-07-22_14-04-06.png)
+![HFS Go Windows 界面](show.png)
 
 用 Go 编写的 Windows 原生 HTTP 文件服务器，交互参考 Rejetto HFS 2.x，但不包含旧版的宏/模板执行引擎。
 
