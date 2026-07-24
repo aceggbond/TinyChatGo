@@ -7,6 +7,11 @@
 
 # Runtime state (may contain local shared paths)
 hfsgo.json
+hfs-go.config
+hfs-go-ca.crt
+hfs-go-ca-key.pem
+hfs-go-cert.pem
+hfs-go-key.pem
 
 # Local tooling and screenshots
 .agents/
