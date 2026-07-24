@@ -22,6 +22,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"hfsgo/internal/database"
 )
 
 const (
@@ -54,6 +56,72 @@ type httpsCertificateFiles struct {
 	caKey   string
 	cert    string
 	certKey string
+}
+
+func generateHTTPSCertificateBundle(hosts []string) (database.CertificateBundle, HTTPSCertificateStatus, error) {
+	now := time.Now()
+	caCert, caKey, caCertPEM, caKeyPEM, err := createHTTPSCA(now)
+	if err != nil {
+		return database.CertificateBundle{}, HTTPSCertificateStatus{}, err
+	}
+	ipAddresses, dnsNames, err := httpsCertificateSANs(hosts)
+	if err != nil {
+		return database.CertificateBundle{}, HTTPSCertificateStatus{}, err
+	}
+	certPEM, keyPEM, err := createHTTPSLeaf(caCert, caKey, ipAddresses, dnsNames, now)
+	if err != nil {
+		return database.CertificateBundle{}, HTTPSCertificateStatus{}, err
+	}
+	bundle := database.CertificateBundle{
+		CACertPEM: caCertPEM, CAKeyPEM: caKeyPEM, CertPEM: certPEM, KeyPEM: keyPEM, UpdatedAt: now.UTC(),
+	}
+	status := inspectHTTPSCertificateBundle(bundle, "")
+	if !status.Available {
+		return database.CertificateBundle{}, status, fmt.Errorf("生成后的 HTTPS 证书校验失败：%s", status.Message)
+	}
+	status.Message = "HTTPS 证书已生成并覆盖保存到 hfs-go.db"
+	return bundle, status, nil
+}
+
+func inspectHTTPSCertificateBundle(bundle database.CertificateBundle, host string) HTTPSCertificateStatus {
+	status := HTTPSCertificateStatus{
+		CAPath: "hfs-go.db", CAKeyPath: "hfs-go.db", CertPath: "hfs-go.db", KeyPath: "hfs-go.db",
+	}
+	now := time.Now()
+	caBlock, _ := pem.Decode(bundle.CACertPEM)
+	if caBlock == nil {
+		status.Message = "数据库中的 CA 证书无效"
+		return status
+	}
+	caCert, err := x509.ParseCertificate(caBlock.Bytes)
+	if err != nil || !caCert.IsCA || now.Before(caCert.NotBefore) || !now.Before(caCert.NotAfter) {
+		status.Message = "数据库中的 CA 证书无效或已过期"
+		return status
+	}
+	status.CAAvailable = true
+	status.CAExpiresAt = caCert.NotAfter
+	status.CAFingerprint = certificateFingerprint(caCert.Raw)
+	keyPair, err := tls.X509KeyPair(bundle.CertPEM, bundle.KeyPEM)
+	if err != nil || len(keyPair.Certificate) == 0 {
+		status.Message = "数据库中的服务器证书或私钥无效"
+		return status
+	}
+	leaf, err := x509.ParseCertificate(keyPair.Certificate[0])
+	if err != nil || now.Before(leaf.NotBefore) || !now.Before(leaf.NotAfter) {
+		status.Message = "数据库中的服务器证书无效或已过期"
+		return status
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(caCert)
+	if _, err = leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: normalizedCertificateHost(host), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}); err != nil {
+		status.Message = "HTTPS 证书不包含当前访问地址，请重新生成证书"
+		return status
+	}
+	status.Available = true
+	status.ExpiresAt = leaf.NotAfter
+	status.Fingerprint = certificateFingerprint(leaf.Raw)
+	status.Message = "HTTPS 证书可用（保存在 hfs-go.db）"
+	return status
 }
 
 func httpsCertificateFilePaths(baseDir string) httpsCertificateFiles {

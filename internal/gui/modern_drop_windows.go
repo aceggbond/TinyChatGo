@@ -133,13 +133,31 @@ func modernDropWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 }
 
 func handleModernShareDrop(paths []string) {
-	if modern == nil || !modern.acceptsShareDrop() || len(paths) == 0 {
+	if modern == nil || len(paths) == 0 {
 		return
 	}
-	if _, err := modern.addPaths(paths); err != nil {
-		_, _ = fmt.Fprintf(modern.log, "%s 拖拽添加失败：%v\n", time.Now().Format("2006/01/02 15:04:05"), err)
-		modern.view.Eval("toast('拖拽添加失败，请查看操作记录',true)")
+	page, selectedChat := modern.dropTarget()
+	if page == "files" {
+		if _, err := modern.addPaths(paths); err != nil {
+			_, _ = fmt.Fprintf(modern.log, "%s 拖拽添加失败：%v\n", time.Now().Format("2006/01/02 15:04:05"), err)
+			modern.view.Eval("toast('拖拽添加失败，请查看操作记录',true)")
+			return
+		}
+		modern.view.Eval(fmt.Sprintf("toast('已通过拖拽添加 %d 项')", len(paths)))
 		return
 	}
-	modern.view.Eval(fmt.Sprintf("toast('已通过拖拽添加 %d 项')", len(paths)))
+	if page != "chat" || selectedChat == "" {
+		return
+	}
+	for index, path := range paths {
+		if err := modern.srv.SendChatAttachmentPath(selectedChat, path); err != nil {
+			_, _ = fmt.Fprintf(modern.log, "%s 拖拽发送失败：%v\n", time.Now().Format("2006/01/02 15:04:05"), err)
+			modern.view.Eval("toast('拖拽发送失败，请检查文件大小和聊天状态',true)")
+			return
+		}
+		if index == len(paths)-1 {
+			modernRefresh()
+		}
+	}
+	modern.view.Eval(fmt.Sprintf("toast('已发送 %d 个附件')", len(paths)))
 }

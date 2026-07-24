@@ -142,8 +142,8 @@ func TestRealEmbeddedImagesKeepModernHTMLBelowWebViewLimit(t *testing.T) {
 	if len(html) >= 500<<10 {
 		t.Fatalf("modern HTML with embedded images is too large: %d bytes", len(html))
 	}
-	if !strings.Contains(html, "版本 1.1") {
-		t.Fatal("rendered about page is missing version 1.1")
+	if !strings.Contains(html, "版本 1.2") {
+		t.Fatal("rendered about page is missing version 1.2")
 	}
 }
 
@@ -166,6 +166,49 @@ func TestModernFileContextMenuAndTemporaryDeleteConfirmation(t *testing.T) {
 	} {
 		if !strings.Contains(modernHTML, marker) {
 			t.Fatalf("modern file-management UI is missing %q", marker)
+		}
+	}
+}
+
+func TestModernOfflineVisitorCanBeRemovedWithoutConversationError(t *testing.T) {
+	for _, marker := range []string{
+		`if(force&&!userByIP(id))showError(error)`,
+		`remove.disabled=false;rename.disabled=false`,
+		`window.hfsRemoveVisitor(selectedChat)`,
+		`.chat-actions{margin-left:auto;display:flex`,
+	} {
+		if !strings.Contains(modernHTML, marker) {
+			t.Fatalf("modern visitor UI is missing %q", marker)
+		}
+	}
+}
+
+func TestModernAdministratorPrivateChatAndCompactActions(t *testing.T) {
+	for _, marker := range []string{
+		`privateBlocked=!group&&state.settings.groupChat&&!state.settings.allowPrivateChat`,
+		`state.settings.groupChat?'管理员私信 · '`,
+		`.chat-actions .button{height:34px`,
+		`.chat-header{display:flex;align-items:center;gap:12px;padding:13px 16px`,
+	} {
+		if !strings.Contains(modernHTML, marker) {
+			t.Fatalf("modern administrator private-chat UI is missing %q", marker)
+		}
+	}
+}
+
+func TestModernChatUnreadPulseAndInstantUserSearch(t *testing.T) {
+	for _, marker := range []string{
+		`id="visitor-search"`,
+		`placeholder="搜索 IP、姓名或拼音"`,
+		`$('visitor-search').addEventListener('input',renderVisitors)`,
+		`function observeChatActivity(items)`,
+		`chatUnread[id]=(chatUnread[id]||0)+increase`,
+		`class="unread-count"`,
+		`@keyframes visitor-unread-pulse`,
+		`user&&user.searchKey`,
+	} {
+		if !strings.Contains(modernHTML, marker) {
+			t.Fatalf("modern unread/search UI is missing %q", marker)
 		}
 	}
 }

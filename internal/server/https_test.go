@@ -116,6 +116,27 @@ func TestStartWithHTTPAndHTTPS(t *testing.T) {
 	}
 }
 
+func TestStartWithHTTPSPEMDoesNotRequireCertificateFiles(t *testing.T) {
+	certFile, keyFile, _ := writeTestCertificate(t)
+	certPEM, err := os.ReadFile(certFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(io.Discard)
+	addresses, err := s.StartWithHTTPSPEM("127.0.0.1:0", "127.0.0.1:0", certPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+	if addresses.HTTP == "" || addresses.HTTPS == "" {
+		t.Fatalf("incomplete addresses: %+v", addresses)
+	}
+}
+
 func TestStartWithHTTPSRollsBackAllListeners(t *testing.T) {
 	certFile, keyFile, _ := writeTestCertificate(t)
 

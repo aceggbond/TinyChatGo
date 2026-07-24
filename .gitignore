@@ -12,6 +12,8 @@ hfs-go-ca.crt
 hfs-go-ca-key.pem
 hfs-go-cert.pem
 hfs-go-key.pem
+hfs-go.db
+chat_files/
 
 # Local tooling and screenshots
 .agents/

@@ -49,6 +49,72 @@ func TestBrowseDownloadAndRange(t *testing.T) {
 	}
 }
 
+func TestFilePanelJSONNavigationAndNoReloadClient(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "资料")
+	if err := os.Mkdir(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "说明.txt"), []byte("content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := New(io.Discard)
+	if err := s.Add(dir); err != nil {
+		t.Fatal(err)
+	}
+	s.SetAccess("", true, true, false)
+
+	rootRequest := httptest.NewRequest(http.MethodGet, "http://example.test/?__hfs_files=1", nil)
+	rootResponse := httptest.NewRecorder()
+	s.ServeHTTP(rootResponse, rootRequest)
+	if rootResponse.Code != http.StatusOK {
+		t.Fatalf("root file JSON status = %d: %s", rootResponse.Code, rootResponse.Body.String())
+	}
+	if contentType := rootResponse.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+		t.Fatalf("root file JSON content type = %q", contentType)
+	}
+	var root fileListResponse
+	if err := json.NewDecoder(rootResponse.Body).Decode(&root); err != nil {
+		t.Fatal(err)
+	}
+	if root.Path != "/" || len(root.Entries) != 1 || root.Entries[0].Name != filepath.Base(dir) || !root.Entries[0].Dir {
+		t.Fatalf("unexpected root file JSON: %#v", root)
+	}
+
+	sharePath := root.Entries[0].URL
+	dirRequest := httptest.NewRequest(http.MethodGet, "http://example.test"+sharePath+"?__hfs_files=1", nil)
+	dirResponse := httptest.NewRecorder()
+	s.ServeHTTP(dirResponse, dirRequest)
+	var listing fileListResponse
+	if err := json.NewDecoder(dirResponse.Body).Decode(&listing); err != nil {
+		t.Fatal(err)
+	}
+	if dirResponse.Code != http.StatusOK || listing.Path != sharePath || listing.Parent != "/" || !listing.Upload {
+		t.Fatalf("unexpected directory file JSON: status=%d body=%#v", dirResponse.Code, listing)
+	}
+	if len(listing.Entries) != 1 || listing.Entries[0].Name != "资料" || !listing.Entries[0].Dir {
+		t.Fatalf("unexpected directory entries: %#v", listing.Entries)
+	}
+
+	pageRequest := httptest.NewRequest(http.MethodGet, "http://example.test"+sharePath, nil)
+	pageResponse := httptest.NewRecorder()
+	s.ServeHTTP(pageResponse, pageRequest)
+	page := pageResponse.Body.String()
+	for _, marker := range []string{
+		`file-toggle-label">展开文件`,
+		`fetch(fileDataURL(path,query)`,
+		`event.preventDefault();loadFileList`,
+		`loadFileList(fileCurrentPath,fileSearchInput.value.trim(),false)`,
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("file panel client missing %q", marker)
+		}
+	}
+	if strings.Contains(page, "location.reload()") {
+		t.Fatal("file panel client still performs a full page reload")
+	}
+}
+
 func TestRemoveManyShares(t *testing.T) {
 	s := New(io.Discard)
 	s.shares = []Share{
@@ -521,11 +587,11 @@ func TestBrowserPageHidesManagementAndIncludesImageViewer(t *testing.T) {
 	response := httptest.NewRecorder()
 	s.ServeHTTP(response, request)
 	body := response.Body.String()
-	if version := response.Header().Get("X-HFS-Go-Version"); version != "1.1" {
+	if version := response.Header().Get("X-HFS-Go-Version"); version != "1.2" {
 		t.Fatalf("server version header = %q", version)
 	}
-	if !strings.Contains(body, `<span class="brand-version">v1.1</span>`) {
-		t.Fatal("browser page is missing visible server version v1.1")
+	if !strings.Contains(body, `<span class="brand-version">v1.2</span>`) {
+		t.Fatal("browser page is missing visible server version v1.2")
 	}
 	for _, removed := range []string{"新建目录", `value="rename"`, `value="delete"`} {
 		if strings.Contains(body, removed) {

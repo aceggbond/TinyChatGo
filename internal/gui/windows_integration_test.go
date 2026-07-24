@@ -60,6 +60,21 @@ func TestOpenFileNameWindowsLayout(t *testing.T) {
 	}
 }
 
+func TestKeyboardCloseDistinguishesAltF4FromTitleBarClose(t *testing.T) {
+	if !isKeyboardCloseCommand(wmSysCommand, scClose, 0) {
+		t.Fatal("Alt+F4 system close was not recognized as an exit request")
+	}
+	if !isKeyboardCloseCommand(wmSysCommand, scClose|0x0003, 0) {
+		t.Fatal("system-command flag bits were not masked")
+	}
+	if isKeyboardCloseCommand(wmSysCommand, scClose, uintptr(100|(200<<16))) {
+		t.Fatal("title-bar close coordinates were mistaken for Alt+F4")
+	}
+	if isKeyboardCloseCommand(wmClose, scClose, 0) {
+		t.Fatal("plain WM_CLOSE was mistaken for a keyboard close command")
+	}
+}
+
 func TestSingleInstanceWaitsUntilPrimaryWindowIsReady(t *testing.T) {
 	suffix := fmt.Sprintf("%d.%d", os.Getpid(), time.Now().UnixNano())
 	mutexName := `Local\HFS-Go.TestMutex.` + suffix

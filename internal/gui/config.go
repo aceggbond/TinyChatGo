@@ -16,6 +16,8 @@ type persistedSettings struct {
 	RedirectToHTTPS  bool   `json:"redirectToHTTPS"`
 	AllowChat        bool   `json:"allowChat"`
 	GroupChat        bool   `json:"groupChat"`
+	ShowUserList     bool   `json:"showUserList"`
+	AllowPrivateChat bool   `json:"allowPrivateChat"`
 	NotifyNewVisitor bool   `json:"notifyNewVisitor"`
 	NotifyNewMessage bool   `json:"notifyNewMessage"`
 	Port             string `json:"port,omitempty"`

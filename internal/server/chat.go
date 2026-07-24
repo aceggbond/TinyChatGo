@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,9 +12,13 @@ import (
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,9 +38,12 @@ const (
 	chatMaxHistoryBytes           = 2 << 20
 	chatMaxMessageRunes           = 32768
 	chatMaxImageBytes             = 512 << 10
+	chatMaxFileBytes              = 32 << 20
+	chatMaxUploadImageBytes       = 100 << 20
+	chatMaxUploadFileBytes        = int64(1) << 30
 	chatMaxImageDimension         = 4096
 	chatMaxImagePixels            = 4 * 1024 * 1024
-	chatMaxWireBytes              = chatMaxImageBytes*4/3 + 16<<10
+	chatMaxWireBytes              = chatMaxFileBytes*4/3 + 32<<10
 	chatSendQueue                 = 64
 	chatWriteWait                 = 5 * time.Second
 	chatPongWait                  = 60 * time.Second
@@ -52,22 +60,35 @@ const (
 	// ChatGroupConversationID is the synthetic conversation selected by the
 	// native UI while group chat is enabled.
 	ChatGroupConversationID = "__group__"
+	// ChatAdminConversationID is the browser-side virtual user representing
+	// the native administrator. It keeps administrator private messages out of
+	// the system-group timeline.
+	ChatAdminConversationID = "__admin__"
 
 	ChatMessageKindText  = "text"
 	ChatMessageKindImage = "image"
+	ChatMessageKindFile  = "file"
 )
 
 // ChatMessage is one message retained in an in-memory conversation.
 type ChatMessage struct {
-	ID       string    `json:"id"`
-	Kind     string    `json:"kind"`
-	Sender   string    `json:"sender"`
-	ClientID string    `json:"clientId,omitempty"`
-	Name     string    `json:"name,omitempty"`
-	Text     string    `json:"text,omitempty"`
-	Mime     string    `json:"mime,omitempty"`
-	Data     []byte    `json:"data,omitempty"`
-	SentAt   time.Time `json:"sentAt"`
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	Sender   string `json:"sender"`
+	ClientID string `json:"clientId,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Mime     string `json:"mime,omitempty"`
+	Data     []byte `json:"data,omitempty"`
+	FileName string `json:"fileName,omitempty"`
+	FileSize int64  `json:"fileSize,omitempty"`
+	FileURL  string `json:"fileUrl,omitempty"`
+	// AttachmentPath is persisted in the database and is never sent to a
+	// browser. It is relative to the application's chat_files directory.
+	AttachmentPath string    `json:"attachmentPath,omitempty"`
+	TargetID       string    `json:"targetId,omitempty"`
+	Private        bool      `json:"private,omitempty"`
+	SentAt         time.Time `json:"sentAt"`
 }
 
 // ChatConversation is a point-in-time, deeply copied view for the native GUI.
@@ -100,19 +121,24 @@ type chatConversationState struct {
 }
 
 type chatHub struct {
-	mu            sync.RWMutex
-	enabled       bool
-	groupEnabled  bool
-	accepting     bool
-	generation    uint64
-	peers         map[string]*chatPeer
-	conversations map[string]*chatConversationState
-	group         *chatConversationState
-	notify        func()
-	notifyPending bool
-	logOperation  func(ip, operation string)
-	active        int
-	idle          chan struct{}
+	mu              sync.RWMutex
+	enabled         bool
+	groupEnabled    bool
+	accepting       bool
+	generation      uint64
+	peers           map[string]*chatPeer
+	conversations   map[string]*chatConversationState
+	group           *chatConversationState
+	notify          func()
+	notifyPending   bool
+	logOperation    func(ip, operation string)
+	persistence     Persistence
+	users           map[string]*ChatUser
+	direct          map[string]*chatConversationState
+	userListEnabled bool
+	privateEnabled  bool
+	active          int
+	idle            chan struct{}
 }
 
 type chatPeer struct {
@@ -132,27 +158,38 @@ type chatCloseRequest struct {
 }
 
 type chatWireMessage struct {
-	Type     string        `json:"type"`
-	Group    bool          `json:"group"`
-	ClientID string        `json:"clientId,omitempty"`
-	Name     string        `json:"name,omitempty"`
-	ID       string        `json:"id,omitempty"`
-	Kind     string        `json:"kind,omitempty"`
-	Sender   string        `json:"sender,omitempty"`
-	Text     string        `json:"text,omitempty"`
-	Mime     string        `json:"mime,omitempty"`
-	Data     []byte        `json:"data,omitempty"`
-	SentAt   time.Time     `json:"sentAt,omitempty"`
-	History  []ChatMessage `json:"history,omitempty"`
+	Type            string                   `json:"type"`
+	Group           bool                     `json:"group"`
+	ClientID        string                   `json:"clientId,omitempty"`
+	Name            string                   `json:"name,omitempty"`
+	ID              string                   `json:"id,omitempty"`
+	Kind            string                   `json:"kind,omitempty"`
+	Sender          string                   `json:"sender,omitempty"`
+	Text            string                   `json:"text,omitempty"`
+	Mime            string                   `json:"mime,omitempty"`
+	Data            []byte                   `json:"data,omitempty"`
+	FileName        string                   `json:"fileName,omitempty"`
+	FileSize        int64                    `json:"fileSize,omitempty"`
+	FileURL         string                   `json:"fileUrl,omitempty"`
+	TargetID        string                   `json:"targetId,omitempty"`
+	Private         bool                     `json:"private,omitempty"`
+	Users           []ChatPublicUser         `json:"users,omitempty"`
+	UserListEnabled bool                     `json:"userListEnabled,omitempty"`
+	PrivateEnabled  bool                     `json:"privateEnabled,omitempty"`
+	DirectHistory   map[string][]ChatMessage `json:"directHistory,omitempty"`
+	SentAt          time.Time                `json:"sentAt,omitempty"`
+	History         []ChatMessage            `json:"history,omitempty"`
 }
 
 type chatClientMessage struct {
-	Type string `json:"type"`
-	Kind string `json:"kind,omitempty"`
-	Name string `json:"name,omitempty"`
-	Text string `json:"text,omitempty"`
-	Mime string `json:"mime,omitempty"`
-	Data []byte `json:"data,omitempty"`
+	Type     string `json:"type"`
+	Kind     string `json:"kind,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Mime     string `json:"mime,omitempty"`
+	Data     []byte `json:"data,omitempty"`
+	FileName string `json:"fileName,omitempty"`
+	TargetID string `json:"targetId,omitempty"`
 }
 
 var chatUpgrader = websocket.Upgrader{
@@ -167,15 +204,77 @@ var chatUpgrader = websocket.Upgrader{
 // causing an excessive transient memory spike.
 var chatImageDecodeSlots = make(chan struct{}, 4)
 
+func (s *Server) handleChatAttachmentUpload(w http.ResponseWriter, r *http.Request, clientIP string) {
+	if !s.ChatEnabled() {
+		http.Error(w, "聊天功能未启用", http.StatusForbidden)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, chatMaxUploadFileBytes+(2<<20))
+	multipartReader, err := r.MultipartReader()
+	if err != nil {
+		http.Error(w, "附件上传格式无效", http.StatusBadRequest)
+		return
+	}
+	var part io.ReadCloser
+	var rawName, rawMIME string
+	for {
+		next, nextErr := multipartReader.NextPart()
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil {
+			http.Error(w, "读取附件失败", http.StatusBadRequest)
+			return
+		}
+		if next.FileName() == "" {
+			_ = next.Close()
+			continue
+		}
+		part, rawName, rawMIME = next, next.FileName(), next.Header.Get("Content-Type")
+		break
+	}
+	if part == nil {
+		http.Error(w, "没有选择附件", http.StatusBadRequest)
+		return
+	}
+	defer part.Close()
+	name, mimeType, err := cleanChatAttachmentMetadata(rawName, rawMIME)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	buffered := bufio.NewReaderSize(part, 512)
+	header, _ := buffered.Peek(512)
+	detected := http.DetectContentType(header)
+	kind, maxBytes := ChatMessageKindFile, chatMaxUploadFileBytes
+	if detected == "image/png" || detected == "image/jpeg" {
+		kind, maxBytes, mimeType = ChatMessageKindImage, int64(chatMaxUploadImageBytes), detected
+	}
+	err = s.chat.receiveHTTPAttachment(clientIP, r.URL.Query().Get("targetId"), name, mimeType, kind, buffered, maxBytes)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "大小") || strings.Contains(err.Error(), "exceeds") {
+			status = http.StatusRequestEntityTooLarge
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"uploaded": true})
+}
+
 func newChatHub() *chatHub {
 	idle := make(chan struct{})
 	close(idle)
 	return &chatHub{
 		peers:         make(map[string]*chatPeer),
 		conversations: make(map[string]*chatConversationState),
+		users:         make(map[string]*ChatUser),
+		direct:        make(map[string]*chatConversationState),
 		group: &chatConversationState{
 			id:   ChatGroupConversationID,
-			name: "多人聊天",
+			name: "系统群",
 		},
 		accepting: true,
 		idle:      idle,
@@ -225,6 +324,32 @@ func (s *Server) ChatOnlineCount() int {
 	return s.chat.onlineIPCountLocked()
 }
 
+// ChatOnlineClients returns one current connection record per canonical IP.
+// Unlike ChatOverview, it remains accurate while system-group mode is enabled.
+func (s *Server) ChatOnlineClients() []ChatClientInfo {
+	s.chat.mu.RLock()
+	clients := make(map[string]ChatClientInfo, len(s.chat.peers))
+	for _, peer := range s.chat.peers {
+		if peer.ip == "" {
+			continue
+		}
+		client := peer.client
+		client.IP = peer.ip
+		if previous, exists := clients[peer.ip]; !exists || client.ConnectedAt.After(previous.ConnectedAt) {
+			clients[peer.ip] = client
+		}
+	}
+	s.chat.mu.RUnlock()
+	result := make([]ChatClientInfo, 0, len(clients))
+	for _, client := range clients {
+		result = append(result, client)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return strings.ToLower(result[i].IP) < strings.ToLower(result[j].IP)
+	})
+	return result
+}
+
 // ChatSnapshot returns every visible conversation with a deep copy of all
 // retained messages, including image bytes.
 func (s *Server) ChatSnapshot() []ChatConversation {
@@ -238,6 +363,13 @@ func (s *Server) ChatOverview() []ChatConversation {
 	return s.chat.snapshotConversations(false)
 }
 
+// ChatAdministratorOverview returns every per-IP administrator conversation
+// regardless of whether system-group mode is enabled. Attachment payloads are
+// omitted so the native UI can poll this summary without loading large files.
+func (s *Server) ChatAdministratorOverview() []ChatConversation {
+	return s.chat.snapshotAdministratorConversations(false)
+}
+
 // ChatConversationSnapshot returns one full, deeply copied conversation.
 // Private IDs are unavailable in group mode, and the synthetic group ID is
 // unavailable in private mode.
@@ -245,6 +377,24 @@ func (s *Server) ChatConversationSnapshot(id string) (ChatConversation, bool) {
 	s.chat.mu.RLock()
 	item, ok := s.chat.snapshotConversationLocked(id, true)
 	s.chat.mu.RUnlock()
+	persistence := s.Persistence()
+	if ok && persistence != nil {
+		for index := range item.Messages {
+			message := &item.Messages[index]
+			if message.Kind != ChatMessageKindImage || message.AttachmentPath == "" || len(message.Data) > 0 {
+				continue
+			}
+			attachment, err := persistence.OpenChatAttachment(message.ID)
+			if err != nil {
+				continue
+			}
+			data, readErr := io.ReadAll(io.LimitReader(attachment.Reader, int64(chatMaxUploadImageBytes)+1))
+			_ = attachment.Reader.Close()
+			if readErr == nil && len(data) <= chatMaxUploadImageBytes {
+				message.Data = data
+			}
+		}
+	}
 	return item, ok
 }
 
@@ -285,9 +435,36 @@ func (h *chatHub) snapshotConversations(includeImageData bool) []ChatConversatio
 	return items
 }
 
+func (h *chatHub) snapshotAdministratorConversations(includeImageData bool) []ChatConversation {
+	h.mu.RLock()
+	rows := make([]chatConversationSnapshotItem, 0, len(h.conversations))
+	for id, conversation := range h.conversations {
+		item, _ := h.snapshotConversationLocked(id, includeImageData)
+		rows = append(rows, chatConversationSnapshotItem{
+			conversation: item,
+			updated:      conversation.updated,
+		})
+	}
+	h.mu.RUnlock()
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].conversation.Online != rows[j].conversation.Online {
+			return rows[i].conversation.Online
+		}
+		if !rows[i].updated.Equal(rows[j].updated) {
+			return rows[i].updated.After(rows[j].updated)
+		}
+		return strings.ToLower(rows[i].conversation.Name) < strings.ToLower(rows[j].conversation.Name)
+	})
+	items := make([]ChatConversation, len(rows))
+	for i := range rows {
+		items[i] = rows[i].conversation
+	}
+	return items
+}
+
 func (h *chatHub) snapshotConversationLocked(id string, includeImageData bool) (ChatConversation, bool) {
-	if h.groupEnabled {
-		if id != ChatGroupConversationID {
+	if id == ChatGroupConversationID {
+		if !h.groupEnabled {
 			return ChatConversation{}, false
 		}
 		return ChatConversation{
@@ -296,9 +473,6 @@ func (h *chatHub) snapshotConversationLocked(id string, includeImageData bool) (
 			Online:   len(h.peers) > 0,
 			Messages: copyChatMessages(h.group.messages, includeImageData),
 		}, true
-	}
-	if id == ChatGroupConversationID {
-		return ChatConversation{}, false
 	}
 	id = normalizeChatIP(id)
 	if id == "" {
@@ -368,9 +542,9 @@ func (h *chatHub) logIPOperation(ip, operation string) {
 	}
 }
 
-// RemoveChatVisitor removes one visitor from the native visitor list without
-// closing its socket. If that visitor sends another message or reconnects, a
-// fresh conversation is created and it appears again.
+// RemoveChatVisitor removes one IP's conversation and persisted user record
+// without closing its socket. Offline historical users are removable as well.
+// A connected IP remains connected and can reappear after new activity.
 func (s *Server) RemoveChatVisitor(id string) bool {
 	if id == "" || id == ChatGroupConversationID {
 		return false
@@ -380,18 +554,24 @@ func (s *Server) RemoveChatVisitor(id string) bool {
 		return false
 	}
 	s.chat.mu.Lock()
-	if s.chat.groupEnabled {
-		s.chat.mu.Unlock()
-		return false
-	}
-	if _, ok := s.chat.conversations[id]; !ok {
+	_, conversationExists := s.chat.conversations[id]
+	_, userExists := s.chat.users[id]
+	if !conversationExists && !userExists {
 		s.chat.mu.Unlock()
 		return false
 	}
 	delete(s.chat.conversations, id)
+	delete(s.chat.users, id)
+	persistence := s.chat.persistence
+	slow := s.chat.broadcastUserListLocked()
 	s.chat.scheduleNotifyLocked()
 	s.chat.mu.Unlock()
-	s.chat.logIPOperation(id, "后台移除聊天记录")
+	if persistence != nil {
+		_ = persistence.DeleteChatConversation(adminConversationID(id))
+		_ = persistence.DeleteChatUser(id)
+	}
+	shutdownSlowChatPeers(slow)
+	s.chat.logIPOperation(id, "后台移除 IP 记录")
 	return true
 }
 
@@ -410,7 +590,7 @@ func (s *Server) SendChatMessage(clientID, text string) error {
 // SendChatImage validates and queues one administrator image. The supplied
 // byte slice is copied before the call returns.
 func (s *Server) SendChatImage(clientID, mime string, data []byte) error {
-	cleanMime, cleanData, err := cleanChatImage(mime, data)
+	cleanMime, cleanData, err := cleanLargeChatImage(mime, data)
 	if err != nil {
 		return err
 	}
@@ -418,6 +598,51 @@ func (s *Server) SendChatImage(clientID, mime string, data []byte) error {
 	message.Mime = cleanMime
 	message.Data = cleanData
 	return s.sendAdminChatMessage(clientID, message)
+}
+
+// SendChatFile validates and queues one administrator attachment.
+func (s *Server) SendChatFile(clientID, name, mime string, data []byte) error {
+	cleanName, cleanMime, cleanData, err := cleanChatFile(name, mime, data)
+	if err != nil {
+		return err
+	}
+	message := newAdminChatMessage(ChatMessageKindFile)
+	message.FileName = cleanName
+	message.Mime = cleanMime
+	message.Data = cleanData
+	message.FileSize = int64(len(cleanData))
+	return s.sendAdminChatMessage(clientID, message)
+}
+
+// SendChatAttachmentPath streams a native desktop file into the persistent
+// chat store without copying it through the WebView bridge as Base64.
+func (s *Server) SendChatAttachmentPath(clientID, path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 {
+		return errors.New("只能发送非空普通文件")
+	}
+	name, mimeType, err := cleanChatAttachmentMetadata(filepath.Base(path), mime.TypeByExtension(filepath.Ext(path)))
+	if err != nil {
+		return err
+	}
+	kind, maxBytes := ChatMessageKindFile, chatMaxUploadFileBytes
+	if strings.EqualFold(mimeType, "image/png") || strings.EqualFold(mimeType, "image/jpeg") {
+		kind, maxBytes = ChatMessageKindImage, int64(chatMaxUploadImageBytes)
+	}
+	if info.Size() > maxBytes {
+		return errors.New("附件超过允许的大小上限")
+	}
+	message := newAdminChatMessage(kind)
+	message.FileName, message.Mime, message.FileSize = name, mimeType, info.Size()
+	return s.chat.receiveAdminAttachment(clientID, message, file, maxBytes)
 }
 
 func newAdminChatMessage(kind string) ChatMessage {
@@ -432,16 +657,75 @@ func newAdminChatMessage(kind string) ChatMessage {
 }
 
 func (s *Server) sendAdminChatMessage(clientID string, message ChatMessage) error {
-	wire := wireFromMessage(message)
 	s.chat.mu.Lock()
 	if !s.chat.enabled {
 		s.chat.mu.Unlock()
 		return errors.New("聊天功能未启用")
 	}
 	if s.chat.groupEnabled {
+		rawTarget := strings.TrimSpace(clientID)
+		if rawTarget != "" && rawTarget != ChatGroupConversationID {
+			clientID = normalizeChatIP(rawTarget)
+			if clientID == "" {
+				s.chat.mu.Unlock()
+				return errors.New("私信目标 IP 无效")
+			}
+			if !s.chat.userListEnabled || !s.chat.privateEnabled {
+				s.chat.mu.Unlock()
+				return errors.New("管理员私信功能未启用")
+			}
+			user := s.chat.users[clientID]
+			peers := s.chat.peersForIPLocked(clientID)
+			if user == nil || user.Blacklisted || len(peers) == 0 {
+				s.chat.mu.Unlock()
+				return errors.New("私信用户已离线")
+			}
+			conversation := s.chat.conversations[clientID]
+			if conversation == nil {
+				conversation = &chatConversationState{
+					id: clientID, name: displayChatUser(*user),
+					client: peers[0].client, updated: time.Now().UTC(),
+				}
+				s.chat.conversations[clientID] = conversation
+			}
+			message.Private = true
+			message.TargetID = clientID
+			stored, err := s.chat.persistMessageLocked(adminConversationID(clientID), message)
+			if err != nil {
+				s.chat.mu.Unlock()
+				return fmt.Errorf("保存管理员私信失败：%w", err)
+			}
+			wire := wireFromMessage(stored)
+			delivered := 0
+			var slow []*chatPeer
+			for _, peer := range peers {
+				if peer.enqueue(wire) {
+					delivered++
+				} else {
+					slow = append(slow, peer)
+				}
+			}
+			if delivered == 0 {
+				s.chat.mu.Unlock()
+				shutdownSlowChatPeers(slow)
+				return errors.New("私信用户连接繁忙，请稍后重试")
+			}
+			appendChatMessage(conversation, stored)
+			s.chat.scheduleNotifyLocked()
+			s.chat.mu.Unlock()
+			shutdownSlowChatPeers(slow)
+			s.chat.logIPOperation(clientID, adminChatOperation(message))
+			return nil
+		}
 		targets := s.chat.onlineIPsLocked()
+		stored, err := s.chat.persistMessageLocked(ChatGroupConversationID, message)
+		if err != nil {
+			s.chat.mu.Unlock()
+			return fmt.Errorf("保存聊天记录失败：%w", err)
+		}
+		wire := wireFromMessage(stored)
 		wire.Group = true
-		appendChatMessage(s.chat.group, message)
+		appendChatMessage(s.chat.group, stored)
 		slow := s.chat.broadcastLocked(wire)
 		s.chat.scheduleNotifyLocked()
 		s.chat.mu.Unlock()
@@ -466,6 +750,12 @@ func (s *Server) sendAdminChatMessage(clientID string, message ChatMessage) erro
 		s.chat.mu.Unlock()
 		return errors.New("访客已离线")
 	}
+	stored, err := s.chat.persistMessageLocked(adminConversationID(clientID), message)
+	if err != nil {
+		s.chat.mu.Unlock()
+		return fmt.Errorf("保存聊天记录失败：%w", err)
+	}
+	wire := wireFromMessage(stored)
 	delivered := 0
 	var slow []*chatPeer
 	for _, peer := range peers {
@@ -480,7 +770,7 @@ func (s *Server) sendAdminChatMessage(clientID string, message ChatMessage) erro
 		shutdownSlowChatPeers(slow)
 		return errors.New("访客连接繁忙，请稍后重试")
 	}
-	appendChatMessage(conversation, message)
+	appendChatMessage(conversation, stored)
 	s.chat.scheduleNotifyLocked()
 	s.chat.mu.Unlock()
 	shutdownSlowChatPeers(slow)
@@ -491,6 +781,9 @@ func (s *Server) sendAdminChatMessage(clientID string, message ChatMessage) erro
 func adminChatOperation(message ChatMessage) string {
 	if message.Kind == ChatMessageKindImage {
 		return "后台发送聊天图片"
+	}
+	if message.Kind == ChatMessageKindFile {
+		return "后台发送聊天文件"
 	}
 	return "后台发送聊天文本"
 }
@@ -938,6 +1231,11 @@ func (h *chatHub) register(peer *chatPeer, generation uint64) bool {
 		h.mu.Unlock()
 		return false
 	}
+	user := h.ensureUserLocked(peer.ip, peer.client)
+	if user.Blacklisted {
+		h.mu.Unlock()
+		return false
+	}
 	old := h.peers[peer.id]
 	if old == nil && len(h.peers) >= chatMaxConnections {
 		h.mu.Unlock()
@@ -949,11 +1247,11 @@ func (h *chatHub) register(peer *chatPeer, generation uint64) bool {
 			h.mu.Unlock()
 			return false
 		}
-		conversation = &chatConversationState{id: peer.ip, name: peer.ip, client: peer.client}
+		conversation = &chatConversationState{id: peer.ip, name: displayChatUser(*user), client: peer.client}
 		h.conversations[peer.ip] = conversation
 	}
 	conversation.client = peer.client
-	conversation.name = peer.ip
+	conversation.name = displayChatUser(*user)
 	conversation.updated = time.Now().UTC()
 	h.peers[peer.id] = peer
 	history := conversation.messages
@@ -961,11 +1259,15 @@ func (h *chatHub) register(peer *chatPeer, generation uint64) bool {
 		history = h.group.messages
 	}
 	ready := chatWireMessage{
-		Type:     "ready",
-		Group:    h.groupEnabled,
-		ClientID: peer.ip,
-		Name:     peer.ip,
-		History:  copyChatMessages(history, true),
+		Type:            "ready",
+		Group:           h.groupEnabled,
+		ClientID:        peer.ip,
+		Name:            displayChatUser(*user),
+		History:         copyChatMessages(history, true),
+		Users:           h.publicUsersLocked(peer.ip),
+		UserListEnabled: h.userListEnabled,
+		PrivateEnabled:  h.privateEnabled,
+		DirectHistory:   h.directHistoryForPeerLocked(peer.ip),
 	}
 	if !peer.enqueue(ready) {
 		if old != nil {
@@ -976,8 +1278,11 @@ func (h *chatHub) register(peer *chatPeer, generation uint64) bool {
 		h.mu.Unlock()
 		return false
 	}
+	h.persistUserLocked(user)
+	slow := h.broadcastUserListLocked()
 	h.scheduleNotifyLocked()
 	h.mu.Unlock()
+	shutdownSlowChatPeers(slow)
 	if old != nil && old != peer {
 		old.shutdown(chatCloseSessionReplaced, "session reconnected")
 	}
@@ -1004,16 +1309,24 @@ func (h *chatHub) evictOldestOfflineLocked() bool {
 
 func (h *chatHub) unregister(peer *chatPeer) {
 	removed := false
+	var slow []*chatPeer
 	h.mu.Lock()
 	if h.peers[peer.id] == peer {
 		delete(h.peers, peer.id)
 		if conversation := h.conversations[peer.ip]; conversation != nil {
 			conversation.updated = time.Now().UTC()
 		}
+		if user := h.users[peer.ip]; user != nil {
+			user.LastSeen = time.Now().UTC()
+			user.Client = peer.client
+			h.persistUserLocked(user)
+		}
+		slow = h.broadcastUserListLocked()
 		h.scheduleNotifyLocked()
 		removed = true
 	}
 	h.mu.Unlock()
+	shutdownSlowChatPeers(slow)
 	if removed {
 		h.logIPOperation(peer.ip, "聊天连接离线")
 	}
@@ -1054,13 +1367,19 @@ func (p *chatPeer) readPump(h *chatHub) {
 		switch incoming.Type {
 		case "message":
 			var err error
-			switch incoming.Kind {
-			case "", ChatMessageKindText:
-				err = h.receiveMessage(p, incoming.Text)
-			case ChatMessageKindImage:
-				err = h.receiveImage(p, incoming.Mime, incoming.Data)
-			default:
-				err = errors.New("未知的消息类型")
+			if incoming.TargetID != "" {
+				err = h.receiveTargetedMessage(p, incoming, incoming.TargetID)
+			} else {
+				switch incoming.Kind {
+				case "", ChatMessageKindText:
+					err = h.receiveMessage(p, incoming.Text)
+				case ChatMessageKindImage:
+					err = h.receiveImage(p, incoming.Mime, incoming.Data)
+				case ChatMessageKindFile:
+					err = h.receiveFile(p, incoming.FileName, incoming.Mime, incoming.Data, "")
+				default:
+					err = errors.New("未知的消息类型")
+				}
 			}
 			if err != nil {
 				p.enqueue(chatWireMessage{Type: "error", Text: err.Error()})
@@ -1070,10 +1389,16 @@ func (p *chatPeer) readPump(h *chatHub) {
 				p.enqueue(chatWireMessage{Type: "error", Text: err.Error()})
 			}
 		case "name":
-			// Visitor aliases are intentionally unsupported. A legacy client
-			// may still send this frame, so acknowledge the immutable IP
-			// identity without changing hub state.
+			// Keep the legacy frame immutable for older clients. New clients
+			// use setName, while the canonical identity always remains the IP.
 			p.enqueue(chatWireMessage{Type: "name", Name: p.ip})
+		case "setName":
+			name, err := cleanChatName(incoming.Name)
+			if err != nil {
+				p.enqueue(chatWireMessage{Type: "error", Text: err.Error()})
+				continue
+			}
+			h.updatePeerName(p, name)
 		default:
 			p.enqueue(chatWireMessage{Type: "error", Text: "未知的聊天操作"})
 		}
@@ -1109,6 +1434,465 @@ func (h *chatHub) receiveImage(peer *chatPeer, mime string, data []byte) error {
 	})
 }
 
+func (h *chatHub) receiveFile(peer *chatPeer, name, mime string, data []byte, targetID string) error {
+	name, mime, data, err := cleanChatFile(name, mime, data)
+	if err != nil {
+		return err
+	}
+	message := ChatMessage{
+		ID:       newChatMessageID(),
+		Kind:     ChatMessageKindFile,
+		Sender:   "user",
+		Mime:     mime,
+		Data:     data,
+		FileName: name,
+		FileSize: int64(len(data)),
+		TargetID: targetID,
+		SentAt:   time.Now().UTC(),
+	}
+	if targetID != "" {
+		return h.receiveDirectMessage(peer, targetID, message)
+	}
+	return h.receivePeerChatMessage(peer, message)
+}
+
+func (h *chatHub) receiveTargetedMessage(peer *chatPeer, incoming chatClientMessage, targetID string) error {
+	var message ChatMessage
+	switch incoming.Kind {
+	case "", ChatMessageKindText:
+		text, err := cleanChatText(incoming.Text)
+		if err != nil {
+			return err
+		}
+		message = ChatMessage{Kind: ChatMessageKindText, Text: text}
+	case ChatMessageKindImage:
+		mime, data, err := cleanChatImage(incoming.Mime, incoming.Data)
+		if err != nil {
+			return err
+		}
+		message = ChatMessage{Kind: ChatMessageKindImage, Mime: mime, Data: data, FileSize: int64(len(data))}
+	case ChatMessageKindFile:
+		name, mime, data, err := cleanChatFile(incoming.FileName, incoming.Mime, incoming.Data)
+		if err != nil {
+			return err
+		}
+		message = ChatMessage{Kind: ChatMessageKindFile, Mime: mime, Data: data, FileName: name, FileSize: int64(len(data))}
+	default:
+		return errors.New("未知的消息类型")
+	}
+	message.ID = newChatMessageID()
+	message.Sender = "user"
+	message.TargetID = targetID
+	message.Private = true
+	message.SentAt = time.Now().UTC()
+	return h.receiveDirectMessage(peer, targetID, message)
+}
+
+func (h *chatHub) receiveDirectMessage(peer *chatPeer, targetID string, message ChatMessage) error {
+	if strings.TrimSpace(targetID) == ChatAdminConversationID {
+		return h.receiveAdministratorPrivateMessage(peer, message)
+	}
+	targetID = normalizeChatIP(targetID)
+	if targetID == "" || targetID == peer.ip {
+		return errors.New("私信目标无效")
+	}
+	h.mu.Lock()
+	if !h.enabled || h.peers[peer.id] != peer {
+		h.mu.Unlock()
+		return errors.New("聊天连接已关闭")
+	}
+	if !h.userListEnabled || !h.privateEnabled {
+		h.mu.Unlock()
+		return errors.New("管理员尚未开启用户私信")
+	}
+	targetUser := h.users[targetID]
+	if targetUser == nil || targetUser.Blacklisted || !h.ipOnlineLocked(targetID) {
+		h.mu.Unlock()
+		return errors.New("私信用户已离线")
+	}
+	sender := h.ensureUserLocked(peer.ip, peer.client)
+	if h.userListEnabled && strings.TrimSpace(sender.Name) == "" {
+		h.mu.Unlock()
+		return errors.New("请先设置名称")
+	}
+	message.ClientID = peer.ip
+	message.Name = displayChatUser(*sender)
+	message.TargetID = targetID
+	message.Private = true
+	conversationID := directConversationID(peer.ip, targetID)
+	conversation := h.direct[conversationID]
+	if conversation == nil {
+		conversation = &chatConversationState{id: conversationID, name: "私信"}
+		h.direct[conversationID] = conversation
+	}
+	stored, err := h.persistMessageLocked(conversationID, message)
+	if err != nil {
+		h.mu.Unlock()
+		return fmt.Errorf("保存私信失败：%w", err)
+	}
+	appendChatMessage(conversation, stored)
+	wire := wireFromMessage(stored)
+	recipients := append(h.peersForIPLocked(peer.ip), h.peersForIPLocked(targetID)...)
+	delivered := 0
+	var slow []*chatPeer
+	seen := make(map[*chatPeer]struct{})
+	for _, recipient := range recipients {
+		if _, duplicate := seen[recipient]; duplicate {
+			continue
+		}
+		seen[recipient] = struct{}{}
+		if recipient.enqueue(wire) {
+			delivered++
+		} else {
+			slow = append(slow, recipient)
+		}
+	}
+	h.mu.Unlock()
+	shutdownSlowChatPeers(slow)
+	if delivered == 0 {
+		return errors.New("私信连接繁忙，请稍后重试")
+	}
+	h.logIPOperation(peer.ip, "发送用户私信")
+	return nil
+}
+
+func (h *chatHub) receiveAdministratorPrivateMessage(peer *chatPeer, message ChatMessage) error {
+	h.mu.Lock()
+	if !h.enabled || h.peers[peer.id] != peer {
+		h.mu.Unlock()
+		return errors.New("聊天连接已关闭")
+	}
+	if !h.userListEnabled || !h.privateEnabled {
+		h.mu.Unlock()
+		return errors.New("管理员尚未开启私信功能")
+	}
+	sender := h.ensureUserLocked(peer.ip, peer.client)
+	if strings.TrimSpace(sender.Name) == "" {
+		h.mu.Unlock()
+		return errors.New("请先设置名称")
+	}
+	conversation := h.conversations[peer.ip]
+	if conversation == nil {
+		conversation = &chatConversationState{
+			id: peer.ip, name: displayChatUser(*sender),
+			client: peer.client, updated: time.Now().UTC(),
+		}
+		h.conversations[peer.ip] = conversation
+	}
+	message.ClientID = peer.ip
+	message.Name = displayChatUser(*sender)
+	message.TargetID = ChatAdminConversationID
+	message.Private = true
+	stored, err := h.persistMessageLocked(adminConversationID(peer.ip), message)
+	if err != nil {
+		h.mu.Unlock()
+		return fmt.Errorf("保存管理员私信失败：%w", err)
+	}
+	appendChatMessage(conversation, stored)
+	wire := wireFromMessage(stored)
+	delivered := 0
+	var slow []*chatPeer
+	for _, recipient := range h.peersForIPLocked(peer.ip) {
+		if recipient.enqueue(wire) {
+			delivered++
+		} else {
+			slow = append(slow, recipient)
+		}
+	}
+	h.scheduleNotifyLocked()
+	h.mu.Unlock()
+	shutdownSlowChatPeers(slow)
+	if delivered == 0 {
+		return errors.New("管理员私信连接繁忙，请稍后重试")
+	}
+	h.logIPOperation(peer.ip, "向管理员发送私信")
+	return nil
+}
+
+func (h *chatHub) updatePeerName(peer *chatPeer, name string) {
+	h.mu.Lock()
+	if h.peers[peer.id] != peer {
+		h.mu.Unlock()
+		return
+	}
+	user := h.ensureUserLocked(peer.ip, peer.client)
+	user.Name = name
+	copy := *user
+	if conversation := h.conversations[peer.ip]; conversation != nil {
+		conversation.name = displayChatUser(copy)
+	}
+	persistence := h.persistence
+	label := displayChatUser(copy)
+	_ = peer.enqueue(chatWireMessage{Type: "name", ClientID: peer.ip, Name: label})
+	slow := h.broadcastUserListLocked()
+	h.scheduleNotifyLocked()
+	h.mu.Unlock()
+	if persistence != nil {
+		_ = persistence.SaveChatUser(copy)
+	}
+	shutdownSlowChatPeers(slow)
+}
+
+func (h *chatHub) persistMessageLocked(conversationID string, message ChatMessage) (ChatMessage, error) {
+	if h.persistence == nil {
+		return message, nil
+	}
+	stored, err := h.persistence.SaveChatMessage(conversationID, message)
+	if err != nil {
+		return message, err
+	}
+	if stored.AttachmentPath != "" {
+		stored.FileURL = chatAttachmentURL(stored)
+		stored.Data = nil
+	}
+	return stored, nil
+}
+
+func (h *chatHub) persistAttachment(conversationID string, message ChatMessage, reader io.Reader, maxBytes int64) (ChatMessage, error) {
+	if h.persistence == nil {
+		return message, errors.New("附件持久化服务不可用")
+	}
+	stored, err := h.persistence.SaveChatAttachment(conversationID, message, reader, maxBytes)
+	if err != nil {
+		return message, err
+	}
+	stored.FileURL = chatAttachmentURL(stored)
+	stored.Data = nil
+	return stored, nil
+}
+
+// receiveHTTPAttachment releases the hub mutex while the body is streamed to
+// disk, then verifies the route is still valid before publishing the message.
+func (h *chatHub) receiveHTTPAttachment(ip, targetID, name, mimeType, kind string, reader io.Reader, maxBytes int64) error {
+	ip = normalizeChatIP(ip)
+	targetID = strings.TrimSpace(targetID)
+	adminTarget := targetID == ChatAdminConversationID
+	if !adminTarget {
+		targetID = normalizeChatIP(targetID)
+	}
+	h.mu.Lock()
+	peers := h.peersForIPLocked(ip)
+	if !h.enabled || ip == "" || len(peers) == 0 {
+		h.mu.Unlock()
+		return errors.New("聊天连接已断开")
+	}
+	peer := peers[0]
+	user := h.ensureUserLocked(ip, peer.client)
+	if h.userListEnabled && strings.TrimSpace(user.Name) == "" {
+		h.mu.Unlock()
+		return errors.New("请先设置名称")
+	}
+	message := ChatMessage{
+		ID: newChatMessageID(), Kind: kind, Sender: "user", ClientID: ip,
+		Name: displayChatUser(*user), FileName: name, Mime: mimeType,
+		TargetID: targetID, Private: targetID != "", SentAt: time.Now().UTC(),
+	}
+	conversationID := ""
+	if adminTarget {
+		if !h.userListEnabled || !h.privateEnabled {
+			h.mu.Unlock()
+			return errors.New("管理员尚未开启私信功能")
+		}
+		if h.conversations[ip] == nil {
+			h.conversations[ip] = &chatConversationState{
+				id: ip, name: displayChatUser(*user),
+				client: peer.client, updated: time.Now().UTC(),
+			}
+		}
+		conversationID = adminConversationID(ip)
+	} else if targetID != "" {
+		if targetID == ip || !h.userListEnabled || !h.privateEnabled {
+			h.mu.Unlock()
+			return errors.New("私信功能不可用")
+		}
+		target := h.users[targetID]
+		if target == nil || target.Blacklisted || !h.ipOnlineLocked(targetID) {
+			h.mu.Unlock()
+			return errors.New("私信用户已离线")
+		}
+		conversationID = directConversationID(ip, targetID)
+	} else if h.groupEnabled {
+		conversationID = ChatGroupConversationID
+	} else {
+		if _, err := h.ensurePeerConversationLocked(peer); err != nil {
+			h.mu.Unlock()
+			return err
+		}
+		conversationID = adminConversationID(ip)
+	}
+	h.mu.Unlock()
+
+	stored, err := h.persistAttachment(conversationID, message, reader, maxBytes)
+	if err != nil {
+		return err
+	}
+	h.mu.Lock()
+	valid := h.enabled && h.ipOnlineLocked(ip)
+	if adminTarget {
+		valid = valid && h.userListEnabled && h.privateEnabled
+	} else if targetID != "" {
+		valid = valid && h.userListEnabled && h.privateEnabled && h.ipOnlineLocked(targetID)
+	} else if conversationID == ChatGroupConversationID {
+		valid = valid && h.groupEnabled
+	} else {
+		valid = valid && !h.groupEnabled
+	}
+	if !valid {
+		h.mu.Unlock()
+		_ = h.persistence.DeleteChatMessage(stored.ID)
+		return errors.New("上传期间聊天状态已变化，请重试")
+	}
+	wire := wireFromMessage(stored)
+	var slow []*chatPeer
+	if adminTarget {
+		conversation := h.conversations[ip]
+		if conversation == nil {
+			h.mu.Unlock()
+			_ = h.persistence.DeleteChatMessage(stored.ID)
+			return errors.New("管理员会话已移除")
+		}
+		appendChatMessage(conversation, stored)
+		for _, recipient := range h.peersForIPLocked(ip) {
+			if !recipient.enqueue(wire) {
+				slow = append(slow, recipient)
+			}
+		}
+	} else if targetID != "" {
+		conversation := h.direct[conversationID]
+		if conversation == nil {
+			conversation = &chatConversationState{id: conversationID, name: "私信"}
+			h.direct[conversationID] = conversation
+		}
+		appendChatMessage(conversation, stored)
+		seen := make(map[*chatPeer]struct{})
+		for _, recipient := range append(h.peersForIPLocked(ip), h.peersForIPLocked(targetID)...) {
+			if _, duplicate := seen[recipient]; duplicate {
+				continue
+			}
+			seen[recipient] = struct{}{}
+			if !recipient.enqueue(wire) {
+				slow = append(slow, recipient)
+			}
+		}
+	} else if conversationID == ChatGroupConversationID {
+		appendChatMessage(h.group, stored)
+		wire.Group = true
+		slow = h.broadcastLocked(wire)
+	} else {
+		conversation := h.conversations[ip]
+		if conversation == nil {
+			h.mu.Unlock()
+			_ = h.persistence.DeleteChatMessage(stored.ID)
+			return errors.New("聊天会话已移除")
+		}
+		appendChatMessage(conversation, stored)
+		for _, recipient := range h.peersForIPLocked(ip) {
+			if !recipient.enqueue(wire) {
+				slow = append(slow, recipient)
+			}
+		}
+	}
+	h.scheduleNotifyLocked()
+	h.mu.Unlock()
+	shutdownSlowChatPeers(slow)
+	h.logIPOperation(ip, receivedChatOperation(stored))
+	return nil
+}
+
+func (h *chatHub) receiveAdminAttachment(clientID string, message ChatMessage, reader io.Reader, maxBytes int64) error {
+	h.mu.Lock()
+	if !h.enabled {
+		h.mu.Unlock()
+		return errors.New("聊天功能未启用")
+	}
+	conversationID := ChatGroupConversationID
+	targets := h.onlineIPsLocked()
+	targetedPrivate := false
+	if h.groupEnabled && strings.TrimSpace(clientID) != "" && strings.TrimSpace(clientID) != ChatGroupConversationID {
+		clientID = normalizeChatIP(clientID)
+		if clientID == "" {
+			h.mu.Unlock()
+			return errors.New("私信目标 IP 无效")
+		}
+		if !h.userListEnabled || !h.privateEnabled {
+			h.mu.Unlock()
+			return errors.New("管理员私信功能未启用")
+		}
+		target := h.users[clientID]
+		if target == nil || target.Blacklisted || !h.ipOnlineLocked(clientID) {
+			h.mu.Unlock()
+			return errors.New("私信用户已离线")
+		}
+		if h.conversations[clientID] == nil {
+			peers := h.peersForIPLocked(clientID)
+			if len(peers) == 0 {
+				h.mu.Unlock()
+				return errors.New("私信用户已离线")
+			}
+			h.conversations[clientID] = &chatConversationState{
+				id: clientID, name: displayChatUser(*target),
+				client: peers[0].client, updated: time.Now().UTC(),
+			}
+		}
+		message.Private = true
+		message.TargetID = clientID
+		conversationID, targets, targetedPrivate = adminConversationID(clientID), []string{clientID}, true
+	} else if !h.groupEnabled {
+		clientID = normalizeChatIP(clientID)
+		if clientID == "" || !h.ipOnlineLocked(clientID) || h.conversations[clientID] == nil {
+			h.mu.Unlock()
+			return errors.New("访客已离线")
+		}
+		conversationID, targets = adminConversationID(clientID), []string{clientID}
+	}
+	h.mu.Unlock()
+	stored, err := h.persistAttachment(conversationID, message, reader, maxBytes)
+	if err != nil {
+		return err
+	}
+	h.mu.Lock()
+	valid := h.enabled
+	if targetedPrivate {
+		valid = valid && h.groupEnabled && h.userListEnabled && h.privateEnabled && h.ipOnlineLocked(clientID)
+	} else if conversationID == ChatGroupConversationID {
+		valid = valid && h.groupEnabled
+	} else {
+		valid = valid && !h.groupEnabled
+	}
+	if !valid {
+		h.mu.Unlock()
+		_ = h.persistence.DeleteChatMessage(stored.ID)
+		return errors.New("发送期间聊天状态已变化，请重试")
+	}
+	wire := wireFromMessage(stored)
+	var slow []*chatPeer
+	if conversationID == ChatGroupConversationID {
+		wire.Group = true
+		appendChatMessage(h.group, stored)
+		slow = h.broadcastLocked(wire)
+	} else {
+		conversation := h.conversations[clientID]
+		if conversation == nil || !h.ipOnlineLocked(clientID) {
+			h.mu.Unlock()
+			_ = h.persistence.DeleteChatMessage(stored.ID)
+			return errors.New("访客已离线")
+		}
+		appendChatMessage(conversation, stored)
+		for _, recipient := range h.peersForIPLocked(clientID) {
+			if !recipient.enqueue(wire) {
+				slow = append(slow, recipient)
+			}
+		}
+	}
+	h.scheduleNotifyLocked()
+	h.mu.Unlock()
+	shutdownSlowChatPeers(slow)
+	for _, ip := range targets {
+		h.logIPOperation(ip, adminChatOperation(stored))
+	}
+	return nil
+}
+
 func (h *chatHub) receivePeerChatMessage(peer *chatPeer, message ChatMessage) error {
 	h.mu.Lock()
 	if !h.enabled || h.peers[peer.id] != peer {
@@ -1121,11 +1905,24 @@ func (h *chatHub) receivePeerChatMessage(peer *chatPeer, message ChatMessage) er
 		return err
 	}
 	message.ClientID = peer.ip
-	message.Name = peer.ip
-	wire := wireFromMessage(message)
+	if user := h.users[peer.ip]; user != nil {
+		if h.userListEnabled && strings.TrimSpace(user.Name) == "" {
+			h.mu.Unlock()
+			return errors.New("请先设置名称")
+		}
+		message.Name = displayChatUser(*user)
+	} else {
+		message.Name = peer.ip
+	}
 	if h.groupEnabled {
+		stored, err := h.persistMessageLocked(ChatGroupConversationID, message)
+		if err != nil {
+			h.mu.Unlock()
+			return fmt.Errorf("保存聊天记录失败：%w", err)
+		}
+		wire := wireFromMessage(stored)
 		wire.Group = true
-		appendChatMessage(h.group, message)
+		appendChatMessage(h.group, stored)
 		slow := h.broadcastLocked(wire)
 		h.scheduleNotifyLocked()
 		h.mu.Unlock()
@@ -1133,6 +1930,12 @@ func (h *chatHub) receivePeerChatMessage(peer *chatPeer, message ChatMessage) er
 		h.logIPOperation(peer.ip, receivedChatOperation(message))
 		return nil
 	}
+	stored, err := h.persistMessageLocked(adminConversationID(peer.ip), message)
+	if err != nil {
+		h.mu.Unlock()
+		return fmt.Errorf("保存聊天记录失败：%w", err)
+	}
+	wire := wireFromMessage(stored)
 	peers := h.peersForIPLocked(peer.ip)
 	delivered := 0
 	var slow []*chatPeer
@@ -1148,7 +1951,7 @@ func (h *chatHub) receivePeerChatMessage(peer *chatPeer, message ChatMessage) er
 		shutdownSlowChatPeers(slow)
 		return errors.New("连接繁忙，请稍后重试")
 	}
-	appendChatMessage(conversation, message)
+	appendChatMessage(conversation, stored)
 	h.scheduleNotifyLocked()
 	h.mu.Unlock()
 	shutdownSlowChatPeers(slow)
@@ -1159,6 +1962,9 @@ func (h *chatHub) receivePeerChatMessage(peer *chatPeer, message ChatMessage) er
 func receivedChatOperation(message ChatMessage) string {
 	if message.Kind == ChatMessageKindImage {
 		return "接收聊天图片"
+	}
+	if message.Kind == ChatMessageKindFile {
+		return "接收聊天文件"
 	}
 	return "接收聊天文本"
 }
@@ -1175,6 +1981,9 @@ func (h *chatHub) ensurePeerConversationLocked(peer *chatPeer) (*chatConversatio
 		name:    peer.ip,
 		client:  peer.client,
 		updated: time.Now().UTC(),
+	}
+	if user := h.users[peer.ip]; user != nil {
+		conversation.name = displayChatUser(*user)
 	}
 	h.conversations[peer.ip] = conversation
 	h.scheduleNotifyLocked()
@@ -1250,6 +2059,11 @@ func wireFromMessage(message ChatMessage) chatWireMessage {
 		Text:     message.Text,
 		Mime:     message.Mime,
 		Data:     message.Data,
+		FileName: message.FileName,
+		FileSize: message.FileSize,
+		FileURL:  message.FileURL,
+		TargetID: message.TargetID,
+		Private:  message.Private,
 		SentAt:   message.SentAt,
 	}
 }
@@ -1394,6 +2208,96 @@ func cleanChatImage(rawMime string, data []byte) (string, []byte, error) {
 		return "", nil, errors.New("图片数据无法解码")
 	}
 	return mime, append([]byte(nil), data...), nil
+}
+
+func cleanLargeChatImage(rawMime string, data []byte) (string, []byte, error) {
+	mimeType := strings.ToLower(strings.TrimSpace(rawMime))
+	expected := ""
+	switch mimeType {
+	case "image/png":
+		expected = "png"
+	case "image/jpeg":
+		expected = "jpeg"
+	default:
+		return "", nil, errors.New("只支持 PNG 或 JPEG 图片")
+	}
+	if len(data) == 0 {
+		return "", nil, errors.New("图片不能为空")
+	}
+	if len(data) > chatMaxUploadImageBytes {
+		return "", nil, errors.New("图片不能超过 100 MiB")
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || format != expected || config.Width <= 0 || config.Height <= 0 {
+		return "", nil, errors.New("图片格式无效")
+	}
+	return mimeType, append([]byte(nil), data...), nil
+}
+
+func cleanChatFile(rawName, rawMime string, data []byte) (string, string, []byte, error) {
+	name := strings.TrimSpace(rawName)
+	name = strings.ReplaceAll(strings.ReplaceAll(name, "\\", "/"), "\x00", "")
+	if slash := strings.LastIndexByte(name, '/'); slash >= 0 {
+		name = name[slash+1:]
+	}
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || strings.ContainsRune(`<>:"/\|?*`, r) {
+			return '_'
+		}
+		return r
+	}, name)
+	name = strings.Trim(name, ". ")
+	if name == "" {
+		return "", "", nil, errors.New("文件名无效")
+	}
+	runes := []rune(name)
+	if len(runes) > 120 {
+		name = string(runes[:120])
+	}
+	if len(data) == 0 {
+		return "", "", nil, errors.New("文件不能为空")
+	}
+	if len(data) > chatMaxFileBytes {
+		return "", "", nil, fmt.Errorf("聊天文件不能超过 %d MiB", chatMaxFileBytes>>20)
+	}
+	mime := strings.TrimSpace(rawMime)
+	if len(mime) > 128 || strings.ContainsAny(mime, "\r\n\x00") {
+		mime = ""
+	}
+	if mime == "" {
+		mime = "application/octet-stream"
+	}
+	return name, mime, append([]byte(nil), data...), nil
+}
+
+func cleanChatAttachmentMetadata(rawName, rawMime string) (string, string, error) {
+	name := strings.TrimSpace(rawName)
+	name = strings.ReplaceAll(strings.ReplaceAll(name, "\\", "/"), "\x00", "")
+	if slash := strings.LastIndexByte(name, '/'); slash >= 0 {
+		name = name[slash+1:]
+	}
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || strings.ContainsRune(`<>:"/\|?*`, r) {
+			return '_'
+		}
+		return r
+	}, name)
+	name = strings.Trim(name, ". ")
+	if name == "" {
+		return "", "", errors.New("文件名无效")
+	}
+	runes := []rune(name)
+	if len(runes) > 120 {
+		name = string(runes[:120])
+	}
+	mimeType := strings.TrimSpace(rawMime)
+	if len(mimeType) > 128 || strings.ContainsAny(mimeType, "\r\n\x00") {
+		mimeType = ""
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	return name, mimeType, nil
 }
 
 func validChatToken(token string) bool {

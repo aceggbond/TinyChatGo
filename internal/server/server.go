@@ -67,6 +67,7 @@ type Server struct {
 	shareChangeNotify func()
 	brandLogo         []byte
 	chat              *chatHub
+	persistence       Persistence
 	visitorMu         sync.Mutex
 	visitorSeen       map[string]time.Time
 	visitorNotify     func(ChatClientInfo)
@@ -75,16 +76,24 @@ type Server struct {
 func New(logWriter io.Writer) *Server {
 	logger := log.New(logWriter, "", log.LstdFlags)
 	chat := newChatHub()
-	chat.logOperation = func(ip, operation string) {
-		logger.Printf("IP=%s 操作=%s", ip, operation)
-	}
-	return &Server{
+	result := &Server{
 		logger:           logger,
 		allowDownload:    true,
 		handlerAccepting: true,
 		chat:             chat,
 		visitorSeen:      make(map[string]time.Time),
 	}
+	chat.logOperation = func(ip, operation string) {
+		at := time.Now().UTC()
+		logger.Printf("IP=%s 操作=%s", ip, operation)
+		result.mu.RLock()
+		persistence := result.persistence
+		result.mu.RUnlock()
+		if persistence != nil {
+			_ = persistence.SaveAccessRecord(AccessRecord{At: at, IP: ip, Operation: operation})
+		}
+	}
+	return result
 }
 
 // SetVisitorNotifier installs a callback for the first successful HTML page
@@ -175,6 +184,41 @@ func (s *Server) Shares() []Share {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]Share(nil), s.shares...)
+}
+
+// ReplaceShares installs a previously persisted share list after validating
+// paths and de-duplicating display names.
+func (s *Server) ReplaceShares(items []Share) {
+	valid := make([]Share, 0, len(items))
+	used := make(map[string]struct{})
+	for _, item := range items {
+		absolute, err := filepath.Abs(strings.TrimSpace(item.Path))
+		if err != nil {
+			continue
+		}
+		if _, err = os.Stat(absolute); err != nil {
+			continue
+		}
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			name = filepath.Base(absolute)
+		}
+		base := name
+		for suffix := 2; ; suffix++ {
+			key := strings.ToLower(name)
+			if _, exists := used[key]; !exists {
+				used[key] = struct{}{}
+				break
+			}
+			name = fmt.Sprintf("%s (%d)", base, suffix)
+		}
+		item.Name = name
+		item.Path = absolute
+		valid = append(valid, item)
+	}
+	s.mu.Lock()
+	s.shares = valid
+	s.mu.Unlock()
 }
 
 func (s *Server) Add(realPath string) error {
@@ -339,7 +383,35 @@ func (s *Server) StartWithHTTPS(httpAddr, httpsAddr, certFile, keyFile string) (
 			return ListenAddresses{}, fmt.Errorf("load HTTPS certificate: %w", err)
 		}
 	}
+	return s.startWithHTTPSCertificateLocked(httpAddr, httpsAddr, certificate)
+}
 
+// StartWithHTTPSPEM starts HTTPS directly from certificate bytes. It allows
+// the desktop application to keep all certificate material in hfs-go.db
+// without creating temporary or persistent certificate files.
+func (s *Server) StartWithHTTPSPEM(httpAddr, httpsAddr string, certPEM, keyPEM []byte) (ListenAddresses, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.http != nil {
+		return s.listenAddresses(), nil
+	}
+	var certificate tls.Certificate
+	var err error
+	if httpsAddr != "" {
+		if len(certPEM) == 0 || len(keyPEM) == 0 {
+			return ListenAddresses{}, errors.New("HTTPS requires both certificate and private key data")
+		}
+		certificate, err = tls.X509KeyPair(certPEM, keyPEM)
+		if err != nil {
+			return ListenAddresses{}, fmt.Errorf("load HTTPS certificate data: %w", err)
+		}
+	}
+	return s.startWithHTTPSCertificateLocked(httpAddr, httpsAddr, certificate)
+}
+
+// startWithHTTPSCertificateLocked assumes lifecycleMu is held and no listener
+// is currently active.
+func (s *Server) startWithHTTPSCertificateLocked(httpAddr, httpsAddr string, certificate tls.Certificate) (ListenAddresses, error) {
 	httpLn, err := net.Listen("tcp", httpAddr)
 	if err != nil {
 		return ListenAddresses{}, fmt.Errorf("listen HTTP on %q: %w", httpAddr, err)
@@ -497,6 +569,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	lw := &statusWriter{ResponseWriter: w, status: &status}
 	defer func() {
+		duration := time.Since(start).Round(time.Millisecond)
 		if r.URL.Path != "/__hfs/chat/status" || status != http.StatusOK {
 			s.logger.Printf(
 				"IP=%s 操作=%s 请求=%s %q 状态=%d 用时=%s",
@@ -505,10 +578,30 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				r.Method,
 				r.URL.Path,
 				status,
-				time.Since(start).Round(time.Millisecond),
+				duration,
 			)
 		}
+		s.mu.RLock()
+		persistence := s.persistence
+		s.mu.RUnlock()
+		if persistence != nil {
+			_ = persistence.SaveAccessRecord(AccessRecord{
+				At:        start.UTC(),
+				IP:        clientIP,
+				Operation: operation,
+				Method:    r.Method,
+				Path:      r.URL.Path,
+				Status:    status,
+				Duration:  duration.String(),
+			})
+		}
 	}()
+	if s.ChatUserBlacklisted(clientIP) {
+		operation = "黑名单拒绝访问"
+		status = http.StatusForbidden
+		http.Error(lw, "此 IP 已被管理员加入黑名单", http.StatusForbidden)
+		return
+	}
 	s.mu.RLock()
 	password, accessVersion, upload, download, manage, fallbackUploadDir := s.password, s.accessVersion, s.allowUpload, s.allowDownload, s.allowManage, s.fallbackUploadDir
 	redirectHTTP, redirectHTTPHost := s.redirectHTTP, s.redirectHTTPHost
@@ -565,7 +658,30 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		lw.Header().Set("Content-Type", "application/json; charset=utf-8")
 		lw.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(lw).Encode(map[string]bool{"enabled": s.ChatEnabled()})
+		_ = json.NewEncoder(lw).Encode(map[string]bool{
+			"enabled":         s.ChatEnabled(),
+			"userListEnabled": s.UserListEnabled(),
+			"privateEnabled":  s.PrivateMessagesEnabled(),
+			"filesEnabled":    upload || download,
+		})
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/__hfs/chat/file/") {
+		operation = "下载聊天附件"
+		s.serveChatAttachment(lw, r, clientIP)
+		return
+	}
+	if r.URL.Path == "/__hfs/chat/upload" {
+		operation = "上传聊天附件"
+		if r.Method != http.MethodPost {
+			http.Error(lw, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !sameWriteOrigin(r) {
+			http.Error(lw, "origin not allowed", http.StatusForbidden)
+			return
+		}
+		s.handleChatAttachmentUpload(lw, r, clientIP)
 		return
 	}
 	if r.URL.Path == "/__hfs/chat/ws" {
@@ -761,6 +877,8 @@ func requestOperation(r *http.Request) string {
 		return "建立聊天连接"
 	case r.URL.Path == "/__hfs/chat/status":
 		return "查询聊天状态"
+	case strings.HasPrefix(r.URL.Path, "/__hfs/chat/file/"):
+		return "下载聊天附件"
 	case r.URL.Path == "/__hfs/logo.png":
 		return "读取界面资源"
 	case r.Method == http.MethodPost && requestIsMultipart(r):
@@ -1017,8 +1135,11 @@ type statusWriter struct {
 func (w *statusWriter) WriteHeader(n int) { *w.status = n; w.ResponseWriter.WriteHeader(n) }
 
 type entry struct {
-	Name, URL, Size, Modified string
-	Dir                       bool
+	Name     string `json:"name"`
+	URL      string `json:"url"`
+	Size     string `json:"size"`
+	Modified string `json:"modified"`
+	Dir      bool   `json:"dir"`
 }
 type pageData struct {
 	Title, Parent string
@@ -1027,6 +1148,11 @@ type pageData struct {
 	Upload        bool
 	Manage        bool
 	Chat          bool
+	Files         bool
+	UserList      bool
+	PrivateChat   bool
+	GroupChat     bool
+	LayoutClass   string
 	Query         string
 	ArchiveURL    string
 	CanUpload     bool
@@ -1054,6 +1180,7 @@ func (s *Server) trackPageVisitor(w http.ResponseWriter, r *http.Request) {
 	if visitorID == "" {
 		return
 	}
+	newUser := s.ObserveChatUser(info)
 	s.visitorMu.Lock()
 	if _, seen := s.visitorSeen[visitorID]; seen {
 		s.visitorSeen[visitorID] = info.ConnectedAt
@@ -1073,7 +1200,7 @@ func (s *Server) trackPageVisitor(w http.ResponseWriter, r *http.Request) {
 	s.visitorSeen[visitorID] = info.ConnectedAt
 	notify := s.visitorNotify
 	s.visitorMu.Unlock()
-	if notify != nil {
+	if notify != nil && (newUser || s.Persistence() == nil) {
 		notify(info)
 	}
 }
@@ -1092,7 +1219,7 @@ func (s *Server) renderRoot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.mu.RLock()
-	upload, fallbackUploadDir := s.allowUpload, s.fallbackUploadDir
+	upload, download, fallbackUploadDir := s.allowUpload, s.allowDownload, s.fallbackUploadDir
 	s.mu.RUnlock()
 	hint := ""
 	rootUpload := upload && fallbackUploadDir != ""
@@ -1102,7 +1229,10 @@ func (s *Server) renderRoot(w http.ResponseWriter, r *http.Request) {
 		hint = "上传已开启：请点击共享文件夹右侧的“上传”，文件不能作为上传目标。"
 	}
 	s.trackPageVisitor(w, r)
-	s.render(w, pageData{Title: "HFS Go - 文件分享", Entries: es, Upload: rootUpload, Query: r.URL.Query().Get("q"), CanUpload: upload, UploadHint: hint, Chat: s.ChatEnabled()})
+	chatEnabled := s.ChatEnabled()
+	userList := chatEnabled && s.UserListEnabled()
+	filesEnabled := upload || download
+	s.render(w, r, pageData{Title: "HFS Go - 文件分享", Entries: es, Upload: rootUpload, Query: r.URL.Query().Get("q"), CanUpload: upload, UploadHint: hint, Chat: chatEnabled, Files: filesEnabled, UserList: userList, PrivateChat: userList && s.PrivateMessagesEnabled(), GroupChat: s.GroupChatEnabled(), LayoutClass: portalLayoutClass(filesEnabled, userList, chatEnabled)})
 }
 func (s *Server) renderDir(w http.ResponseWriter, r *http.Request, dir, title string) {
 	list, err := os.ReadDir(dir)
@@ -1134,15 +1264,45 @@ func (s *Server) renderDir(w http.ResponseWriter, r *http.Request, dir, title st
 		parent = "/"
 	}
 	s.mu.RLock()
-	upload, manage := s.allowUpload, s.allowManage
+	upload, download, manage := s.allowUpload, s.allowDownload, s.allowManage
 	s.mu.RUnlock()
 	s.trackPageVisitor(w, r)
-	s.render(w, pageData{Title: title, Parent: parent, Entries: es, Upload: upload, CanUpload: upload, Manage: manage, Query: r.URL.Query().Get("q"), ArchiveURL: base + "?archive=1", Chat: s.ChatEnabled()})
+	chatEnabled := s.ChatEnabled()
+	userList := chatEnabled && s.UserListEnabled()
+	filesEnabled := upload || download
+	s.render(w, r, pageData{Title: title, Parent: parent, Entries: es, Upload: upload, CanUpload: upload, Manage: manage, Query: r.URL.Query().Get("q"), ArchiveURL: base + "?archive=1", Chat: chatEnabled, Files: filesEnabled, UserList: userList, PrivateChat: userList && s.PrivateMessagesEnabled(), GroupChat: s.GroupChatEnabled(), LayoutClass: portalLayoutClass(filesEnabled, userList, chatEnabled)})
 }
-func (s *Server) render(w http.ResponseWriter, d pageData) {
+
+type fileListResponse struct {
+	Path       string  `json:"path"`
+	Title      string  `json:"title"`
+	Parent     string  `json:"parent,omitempty"`
+	Query      string  `json:"query,omitempty"`
+	ArchiveURL string  `json:"archiveUrl,omitempty"`
+	Upload     bool    `json:"upload"`
+	UploadHint string  `json:"uploadHint,omitempty"`
+	Entries    []entry `json:"entries"`
+}
+
+func (s *Server) render(w http.ResponseWriter, r *http.Request, d pageData) {
+	if r.Method == http.MethodGet && r.URL.Query().Get("__hfs_files") == "1" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(fileListResponse{
+			Path:       r.URL.Path,
+			Title:      d.Title,
+			Parent:     d.Parent,
+			Query:      d.Query,
+			ArchiveURL: d.ArchiveURL,
+			Upload:     d.Upload,
+			UploadHint: d.UploadHint,
+			Entries:    d.Entries,
+		})
+		return
+	}
 	d.Version = appinfo.Version
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := pageTemplate.Execute(w, d); err != nil {
+	if err := portalTemplate.Execute(w, d); err != nil {
 		s.logger.Print(err)
 	}
 }
@@ -1222,8 +1382,8 @@ function markRead(){unread=0;updateBadge()}
 function updateBadge(){badge.textContent=unread>99?'99+':String(unread);badge.classList.toggle('on',unread>0);document.title=unread?'('+String(unread)+') 新消息 - '+basePageTitle:basePageTitle}
 function clearMessages(){while(messages.firstChild)messages.removeChild(messages.firstChild);seen=Object.create(null)}
 function timeLabel(value){var date=new Date(value);return isNaN(date.getTime())?'':date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
-function emptyText(){return groupMode?'当前是多人聊天，所有在线访客都能看到新消息。':'发送消息后，管理员可在服务器后台回复你。'}
-function updateMode(){chatTitle.textContent=groupMode?'多人在线聊天':'与管理员聊天';panel.setAttribute('aria-label',groupMode?'多人在线聊天':'与管理员聊天')}
+function emptyText(){return groupMode?'当前是系统群，所有在线访客都能看到新消息。':'发送消息后，管理员可在服务器后台回复你。'}
+function updateMode(){chatTitle.textContent=groupMode?'系统群':'与管理员聊天';panel.setAttribute('aria-label',groupMode?'系统群':'与管理员聊天')}
 function isOwnMessage(message){if(message.sender==='admin')return false;if(currentClientID&&message.clientId)return message.clientId===currentClientID;return !groupMode&&message.sender==='user'}
 function messageName(message,mine){if(mine)return '我';if(message.sender==='admin')return '管理员（后台）';var value=typeof message.clientId==='string'?message.clientId.trim():'';value=value||'未知 IP';return groupMode?value+'（IP）':value}
 function validImageData(message){var mime=typeof message.mime==='string'?message.mime.toLowerCase():'';var data=typeof message.data==='string'?message.data:'';if(mime!=='image/png'&&mime!=='image/jpeg')return false;if(!data||data.length>Math.ceil(MAX_IMAGE_BYTES*4/3)+4||data.length%4!==0||!/^[A-Za-z0-9+/]+={0,2}$/.test(data))return false;var raw;try{raw=atob(data)}catch(e){return false}if(raw.length>MAX_IMAGE_BYTES)return false;if(mime==='image/jpeg')return raw.length>=3&&raw.charCodeAt(0)===255&&raw.charCodeAt(1)===216&&raw.charCodeAt(2)===255;return raw.length>=8&&raw.charCodeAt(0)===137&&raw.slice(1,4)==='PNG'&&raw.charCodeAt(4)===13&&raw.charCodeAt(5)===10&&raw.charCodeAt(6)===26&&raw.charCodeAt(7)===10}
@@ -1243,7 +1403,7 @@ function tabToken(){var token=stored(sessionStorage,'hfs-chat-tab');if(/^[0-9a-f
 function socketURL(){var scheme=location.protocol==='https:'?'wss://':'ws://';var query=new URLSearchParams();query.set('tab',tabToken());return scheme+location.host+'/__hfs/chat/ws?'+query.toString()}
 function connect(){if(!enabled||socket&&(socket.readyState===WebSocket.CONNECTING||socket.readyState===WebSocket.OPEN||socket.readyState===WebSocket.CLOSING))return;clearTimeout(reconnectTimer);reconnectTimer=0;setStatus('正在连接…',false);var ws;try{ws=new WebSocket(socketURL());socket=ws}catch(e){socket=null;scheduleReconnect();return}
 ws.onopen=function(){if(socket===ws)setStatus('正在建立聊天会话…',false)};
-ws.onmessage=function(event){if(socket!==ws)return;var data;try{data=JSON.parse(event.data)}catch(e){return}if(data.type==='ready'){reconnectDelay=1000;currentClientID=typeof data.clientId==='string'?data.clientId:'';groupMode=!!data.group;updateMode();clearMessages();var history=Array.isArray(data.history)?data.history:[];history.forEach(function(item){addMessage(item,false)});if(!history.length){var empty=document.createElement('div');empty.className='chat-empty';empty.textContent=emptyText();messages.appendChild(empty)}setStatus(groupMode?'已连接，当前为多人聊天':'已连接，管理员可实时回复',true)}else if(data.type==='message'){var empty=messages.querySelector('.chat-empty');if(empty)empty.remove();addMessage(data,true)}else if(data.type==='error'){setStatus(data.text||'消息发送失败',ws.readyState===WebSocket.OPEN)}};
+ws.onmessage=function(event){if(socket!==ws)return;var data;try{data=JSON.parse(event.data)}catch(e){return}if(data.type==='ready'){reconnectDelay=1000;currentClientID=typeof data.clientId==='string'?data.clientId:'';groupMode=!!data.group;updateMode();clearMessages();var history=Array.isArray(data.history)?data.history:[];history.forEach(function(item){addMessage(item,false)});if(!history.length){var empty=document.createElement('div');empty.className='chat-empty';empty.textContent=emptyText();messages.appendChild(empty)}setStatus(groupMode?'已连接，当前为系统群':'已连接，管理员可实时回复',true)}else if(data.type==='message'){var empty=messages.querySelector('.chat-empty');if(empty)empty.remove();addMessage(data,true)}else if(data.type==='error'){setStatus(data.text||'消息发送失败',ws.readyState===WebSocket.OPEN)}};
 ws.onclose=function(event){if(socket!==ws)return;socket=null;if(event.code===4003){applyEnabled(false);clearTimeout(statusTimer);statusTimer=setTimeout(pollStatus,3000);return}if(event.code===4005){try{sessionStorage.removeItem('hfs-chat-tab')}catch(e){}currentClientID='';reconnectDelay=1000;setStatus('检测到重复页面，正在建立独立会话…',false);if(enabled)scheduleReconnect(150);return}setStatus('连接已断开，正在重连…',false);if(enabled)scheduleReconnect(reconnectDelay)};
 ws.onerror=function(){if(socket===ws)setStatus('连接异常，正在重试…',false)};}
 function scheduleReconnect(delay){clearTimeout(reconnectTimer);var wait=delay||reconnectDelay;reconnectTimer=setTimeout(function(){reconnectTimer=0;connect()},wait);reconnectDelay=Math.min(reconnectDelay*2,30000)}

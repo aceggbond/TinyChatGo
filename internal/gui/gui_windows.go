@@ -156,6 +156,7 @@ const (
 	wmKillFocus        = 8
 	wmSetCursor        = 0x0020
 	wmCommand          = 0x111
+	wmSysCommand       = 0x0112
 	wmCtlColorEdit     = 0x0133
 	wmCtlColorList     = 0x0134
 	wmCtlColorStatic   = 0x0138
@@ -176,6 +177,7 @@ const (
 	wmLButtonDown      = 0x0201
 	wmLButtonUp        = 0x0202
 	wmMouseMove        = 0x0200
+	scClose            = 0xF060
 	wsOverlappedWindow = 0x00CF0000
 	wsVisible          = 0x10000000
 	wsChild            = 0x40000000
@@ -571,6 +573,11 @@ func wndProc(hwnd uintptr, m uint32, w, l uintptr) uintptr {
 		setTextColor.Call(w, rgb(31, 42, 58))
 		setBkColor.Call(w, rgb(255, 255, 255))
 		return brushWhite
+	case wmSysCommand:
+		if isKeyboardCloseCommand(m, w, l) {
+			exitApplication()
+			return 0
+		}
 	case wmClose:
 		minimizeToTray()
 		return 0
@@ -583,6 +590,10 @@ func wndProc(hwnd uintptr, m uint32, w, l uintptr) uintptr {
 	}
 	r, _, _ := defWindowProc.Call(hwnd, uintptr(m), w, l)
 	return r
+}
+
+func isKeyboardCloseCommand(message uint32, wParam, lParam uintptr) bool {
+	return message == wmSysCommand && wParam&0xFFF0 == scClose && lParam == 0
 }
 
 func splitterProc(hwnd uintptr, m uint32, w, l uintptr) uintptr {
@@ -642,7 +653,7 @@ func createControls(parent HWND) {
 	app.open = control(parent, "BUTTON", "在浏览器中打开", wsVisible|wsChild|wsTabStop|bsFlat, 810, 467, 159, 34, idOpen)
 	app.logTitle = control(parent, "STATIC", "访问日志", wsVisible|wsChild, 30, 521, 120, 27, 0)
 	app.chatEnabled = control(parent, "BUTTON", "允许聊天", wsVisible|wsChild|wsTabStop|bsAutoCheckBox, 150, 517, 105, 30, idChatEnable)
-	app.chatGroup = control(parent, "BUTTON", "多人聊天", wsVisible|wsChild|wsTabStop|bsAutoCheckBox, 260, 517, 105, 30, idChatGroup)
+	app.chatGroup = control(parent, "BUTTON", "系统群", wsVisible|wsChild|wsTabStop|bsAutoCheckBox, 260, 517, 105, 30, idChatGroup)
 	app.chatView = control(parent, "BUTTON", "在线聊天 (0)", wsVisible|wsChild|wsTabStop|bsFlat, 370, 516, 125, 32, idChatView)
 	app.clearLog = control(parent, "BUTTON", "清空日志", wsVisible|wsChild|wsTabStop|bsFlat, 869, 516, 100, 32, idClearLog)
 	app.splitter = control(parent, "HFSGoSplitter", "", wsVisible|wsChild, 30, 548, 939, 6, 0)
@@ -1488,6 +1499,12 @@ func chatMessageSummary(message server.ChatMessage) string {
 	if strings.EqualFold(message.Kind, server.ChatMessageKindImage) {
 		return "发来一张图片"
 	}
+	if strings.EqualFold(message.Kind, server.ChatMessageKindFile) {
+		if strings.TrimSpace(message.FileName) != "" {
+			return "发来文件：" + message.FileName
+		}
+		return "发来一个文件"
+	}
 	summary := strings.Join(strings.Fields(message.Text), " ")
 	if summary == "" {
 		return "发来一条消息"
@@ -1531,7 +1548,7 @@ func dismissSelectedChatVisitor() {
 	}
 	clientID := app.chatIDs[index]
 	if clientID == server.ChatGroupConversationID {
-		alert("多人聊天会话不能移除；请先关闭“多人聊天”，再双击单个访客。")
+		alert("系统群会话不能移除；请先关闭“系统群”，再双击单个访客。")
 		return
 	}
 	name := "此访客"
@@ -1597,7 +1614,7 @@ func refreshChatHistory(items []server.ChatConversation) {
 
 func formatChatClientDetails(conversation server.ChatConversation) string {
 	if conversation.ID == server.ChatGroupConversationID {
-		return fmt.Sprintf("多人聊天会话\r\n当前在线访客：%d\r\n关闭“多人聊天”后可查看单个访客详情。\r\n操作：Enter 发送；Ctrl+V 或拖入 PNG/JPEG 图片", app.srv.ChatOnlineCount())
+		return fmt.Sprintf("系统群会话\r\n当前在线访客：%d\r\n关闭“系统群”后可查看单个访客详情。\r\n操作：Enter 发送；Ctrl+V 或拖入 PNG/JPEG 图片", app.srv.ChatOnlineCount())
 	}
 	status := "离线"
 	if conversation.Online {

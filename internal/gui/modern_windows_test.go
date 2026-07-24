@@ -15,6 +15,7 @@ import (
 	"time"
 	"unsafe"
 
+	"hfsgo/internal/database"
 	"hfsgo/internal/server"
 )
 
@@ -76,6 +77,30 @@ func TestModernControllerSettingsAndServerLifecycle(t *testing.T) {
 	}
 	if state.Running {
 		t.Fatal("server remained running after stop")
+	}
+}
+
+func TestRemoveLegacyDataFileStaysInsideApplicationDirectory(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, settingsFileName)
+	if err := os.WriteFile(legacy, []byte("legacy"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeLegacyDataFile(legacy, root, settingsFileName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy file still exists: %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), settingsFileName)
+	if err := os.WriteFile(outside, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeLegacyDataFile(outside, root, settingsFileName); err == nil {
+		t.Fatal("unsafe legacy path was accepted")
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("unsafe legacy file was changed: %v", err)
 	}
 }
 
@@ -279,6 +304,37 @@ func TestModernControllerGeneratesCertificateAndStartsHTTPS(t *testing.T) {
 	}
 	if _, err = controller.toggleServer("127.0.0.1", strconv.Itoa(httpPort), strconv.Itoa(httpsPort)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestModernControllerStoresCertificateOnlyInDatabase(t *testing.T) {
+	temp := t.TempDir()
+	store, err := database.Open(filepath.Join(temp, "hfs-go.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	settings := defaultPersistedSettings()
+	settings.AccessHost = "127.0.0.1"
+	controller := &modernController{
+		srv: server.New(io.Discard), db: store, log: &safeBuffer{},
+		settings: settings, databasePath: store.Path(), certificateDir: temp,
+		addresses: []modernAddress{{Host: "127.0.0.1", Label: "127.0.0.1（本机）"}},
+	}
+	state, err := controller.generateCertificate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Certificate.Available || state.Certificate.CAPath != "hfs-go.db" {
+		t.Fatalf("database certificate status = %#v", state.Certificate)
+	}
+	if _, found, loadErr := store.LoadCertificateBundle(); loadErr != nil || !found {
+		t.Fatalf("certificate bundle was not stored: found=%v error=%v", found, loadErr)
+	}
+	for _, name := range []string{httpsCAFileName, httpsCAKeyFileName, httpsCertFileName, httpsCertKeyFileName} {
+		if _, statErr := os.Stat(filepath.Join(temp, name)); !os.IsNotExist(statErr) {
+			t.Fatalf("certificate sidecar %s still exists: %v", name, statErr)
+		}
 	}
 }
 

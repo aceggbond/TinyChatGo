@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 
 	webview "github.com/jchv/go-webview2"
 
+	"hfsgo/internal/database"
 	"hfsgo/internal/server"
 )
 
@@ -43,13 +45,28 @@ type modernShare struct {
 }
 
 type modernConversation struct {
-	ID           string                `json:"id"`
-	Name         string                `json:"name"`
-	Online       bool                  `json:"online"`
-	MessageCount int                   `json:"messageCount"`
-	Client       server.ChatClientInfo `json:"client"`
-	LastMessage  string                `json:"lastMessage"`
-	LastAt       time.Time             `json:"lastAt"`
+	ID               string                `json:"id"`
+	Name             string                `json:"name"`
+	Online           bool                  `json:"online"`
+	MessageCount     int                   `json:"messageCount"`
+	UserMessageCount int                   `json:"userMessageCount"`
+	Client           server.ChatClientInfo `json:"client"`
+	LastMessage      string                `json:"lastMessage"`
+	LastMessageID    string                `json:"lastMessageId"`
+	LastSender       string                `json:"lastSender"`
+	LastAt           time.Time             `json:"lastAt"`
+}
+
+type modernUser struct {
+	IP          string                `json:"ip"`
+	Name        string                `json:"name"`
+	DisplayName string                `json:"displayName"`
+	SearchKey   string                `json:"searchKey"`
+	Online      bool                  `json:"online"`
+	Blacklisted bool                  `json:"blacklisted"`
+	FirstSeen   time.Time             `json:"firstSeen"`
+	LastSeen    time.Time             `json:"lastSeen"`
+	Client      server.ChatClientInfo `json:"client"`
 }
 
 type modernState struct {
@@ -65,6 +82,7 @@ type modernState struct {
 	Addresses     []modernAddress        `json:"addresses"`
 	Shares        []modernShare          `json:"shares"`
 	Conversations []modernConversation   `json:"conversations"`
+	Users         []modernUser           `json:"users"`
 	Logs          string                 `json:"logs"`
 	ConfigPath    string                 `json:"configPath"`
 }
@@ -73,14 +91,17 @@ type modernController struct {
 	mu             sync.RWMutex
 	view           webview.WebView
 	srv            *server.Server
+	db             *database.DB
 	log            *safeBuffer
 	settings       persistedSettings
 	settingsPath   string
 	sharesPath     string
+	databasePath   string
 	tempUploadDir  string
 	certificateDir string
 	addresses      []modernAddress
 	activePage     string
+	selectedChat   string
 	running        bool
 	transition     bool
 	lastError      string
@@ -114,12 +135,45 @@ func Run(logo, donation []byte) error {
 	baseDir := filepath.Dir(executable)
 	settingsPath := filepath.Join(baseDir, settingsFileName)
 	sharesPath := filepath.Join(baseDir, "hfsgo.json")
-	settings, settingsErr := loadPersistedSettings(settingsPath)
+	databasePath := filepath.Join(baseDir, "hfs-go.db")
+	store, err := database.Open(databasePath)
+	if err != nil {
+		return fmt.Errorf("无法创建或打开持久化数据库：%w", err)
+	}
+	defer func() {
+		if store != nil {
+			_ = store.Close()
+		}
+	}()
+	settings := defaultPersistedSettings()
+	settingsFound, settingsErr := store.LoadSettings(&settings)
+	if settingsErr == nil && !settingsFound {
+		settings, settingsErr = loadPersistedSettings(settingsPath)
+		if settingsErr == nil {
+			settingsErr = store.SaveSettings(settings)
+		}
+	}
 
 	buffer := &safeBuffer{}
+	if migrationErr := migrateLegacyHTTPSCertificate(store, baseDir); migrationErr != nil {
+		_, _ = fmt.Fprintf(buffer, "%s 旧 HTTPS 证书迁移失败：%v\n", time.Now().Format("2006/01/02 15:04:05"), migrationErr)
+	}
 	srv := server.New(buffer)
-	if err = srv.Load(sharesPath); err != nil {
-		_, _ = fmt.Fprintf(buffer, "%s 分享列表读取失败：%v\n", time.Now().Format("2006/01/02 15:04:05"), err)
+	var persistedShares []server.Share
+	sharesFound, sharesErr := store.LoadShares(&persistedShares)
+	if sharesErr == nil && sharesFound {
+		srv.ReplaceShares(persistedShares)
+	} else if sharesErr == nil {
+		if loadErr := srv.Load(sharesPath); loadErr != nil {
+			sharesErr = loadErr
+		} else {
+			sharesErr = store.SaveShares(srv.Shares())
+		}
+	}
+	if sharesErr != nil {
+		_, _ = fmt.Fprintf(buffer, "%s 分享列表读取失败：%v\n", time.Now().Format("2006/01/02 15:04:05"), sharesErr)
+	} else {
+		_ = removeLegacyDataFile(sharesPath, baseDir, "hfsgo.json")
 	}
 	if settingsErr != nil {
 		_, _ = fmt.Fprintf(buffer, "%s 配置文件无效，已使用安全默认值：%v\n", time.Now().Format("2006/01/02 15:04:05"), settingsErr)
@@ -128,6 +182,11 @@ func Run(logo, donation []byte) error {
 	srv.SetHTTPSRedirect(settings.RedirectToHTTPS, settings.AccessHost, settings.HTTPSPort)
 	srv.SetChatEnabled(settings.AllowChat)
 	srv.SetGroupChatEnabled(settings.GroupChat)
+	srv.SetUserListEnabled(settings.ShowUserList)
+	srv.SetPrivateMessagesEnabled(settings.AllowPrivateChat)
+	if err = srv.SetPersistence(store); err != nil {
+		return fmt.Errorf("读取聊天与用户数据失败：%w", err)
+	}
 	srv.SetBrandLogo(logo)
 	tempUploadDir := windowsTemporaryUploadDir()
 	if err = srv.SetFallbackUploadDir(tempUploadDir); err != nil {
@@ -149,8 +208,10 @@ func Run(logo, donation []byte) error {
 	if settings.AccessHost == "" {
 		settings.AccessHost = "127.0.0.1"
 	}
-	if err = savePersistedSettings(settingsPath, settings); err != nil {
-		_, _ = fmt.Fprintf(buffer, "%s 配置文件创建失败：%v\n", time.Now().Format("2006/01/02 15:04:05"), err)
+	if err = store.SaveSettings(settings); err != nil {
+		_, _ = fmt.Fprintf(buffer, "%s 数据库配置写入失败：%v\n", time.Now().Format("2006/01/02 15:04:05"), err)
+	} else {
+		_ = removeLegacyDataFile(settingsPath, baseDir, settingsFileName)
 	}
 
 	view := webview.NewWithOptions(webview.WebViewOptions{
@@ -174,10 +235,12 @@ func Run(logo, donation []byte) error {
 	controller := &modernController{
 		view:           view,
 		srv:            srv,
+		db:             store,
 		log:            buffer,
 		settings:       settings,
 		settingsPath:   settingsPath,
 		sharesPath:     sharesPath,
+		databasePath:   databasePath,
 		tempUploadDir:  tempUploadDir,
 		certificateDir: baseDir,
 		addresses:      addressOptions,
@@ -198,7 +261,7 @@ func Run(logo, donation []byte) error {
 		hwnd:             HWND(window),
 		srv:              srv,
 		log:              buffer,
-		config:           sharesPath,
+		config:           databasePath,
 		seenChatMessages: make(map[string]struct{}),
 		notifyNewVisitor: settings.NotifyNewVisitor,
 		notifyNewMessage: settings.NotifyNewMessage,
@@ -242,8 +305,15 @@ func Run(logo, donation []byte) error {
 		"hfsGetConversation":     controller.getConversation,
 		"hfsSendMessage":         controller.sendMessage,
 		"hfsSendImage":           controller.sendImage,
+		"hfsSendFile":            controller.sendFile,
+		"hfsOpenChatAttachment":  controller.openChatAttachment,
 		"hfsRemoveVisitor":       controller.removeVisitor,
+		"hfsSetUserName":         controller.setUserName,
+		"hfsSetUserBlacklisted":  controller.setUserBlacklisted,
+		"hfsClearChatHistory":    controller.clearChatHistory,
+		"hfsClearUsers":          controller.clearUsers,
 		"hfsSetActivePage":       controller.setActivePage,
+		"hfsSetSelectedChat":     controller.setSelectedChat,
 		"hfsSetDropZone":         controller.setNativeDropZone,
 		"hfsCheckUpdate":         controller.checkUpdate,
 		"hfsOpenProjectURL":      controller.openProjectURL,
@@ -274,6 +344,71 @@ func modernHostAvailable(host string, addresses []modernAddress) bool {
 		}
 	}
 	return false
+}
+
+func removeLegacyDataFile(filename, baseDir, expectedName string) error {
+	absolute, err := filepath.Abs(filename)
+	if err != nil {
+		return err
+	}
+	root, err := filepath.Abs(baseDir)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(filepath.Dir(absolute), root) || !strings.EqualFold(filepath.Base(absolute), expectedName) {
+		return errors.New("拒绝删除不安全的旧版数据文件路径")
+	}
+	err = os.Remove(absolute)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func migrateLegacyHTTPSCertificate(store *database.DB, baseDir string) error {
+	if store == nil {
+		return nil
+	}
+	if _, found, err := store.LoadCertificateBundle(); err != nil {
+		return err
+	} else if found {
+		files := httpsCertificateFilePaths(baseDir)
+		for _, path := range []string{files.caCert, files.caKey, files.cert, files.certKey} {
+			_ = os.Remove(path)
+		}
+		return nil
+	}
+	files := httpsCertificateFilePaths(baseDir)
+	caCert, err := os.ReadFile(files.caCert)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	caKey, err := os.ReadFile(files.caKey)
+	if err != nil {
+		return err
+	}
+	cert, err := os.ReadFile(files.cert)
+	if err != nil {
+		return err
+	}
+	key, err := os.ReadFile(files.certKey)
+	if err != nil {
+		return err
+	}
+	bundle := database.CertificateBundle{CACertPEM: caCert, CAKeyPEM: caKey, CertPEM: cert, KeyPEM: key}
+	if !inspectHTTPSCertificateBundle(bundle, "").Available {
+		return errors.New("旧证书文件校验失败")
+	}
+	if err = store.SaveCertificateBundle(bundle); err != nil {
+		return err
+	}
+	for _, path := range []string{files.caCert, files.caKey, files.cert, files.certKey} {
+		_ = os.Remove(path)
+	}
+	return nil
 }
 
 func queueModernVisitor(info server.ChatClientInfo) {
@@ -310,6 +445,14 @@ func modernWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr
 		return 0
 	}
 	switch message {
+	case wmSysCommand:
+		if isKeyboardCloseCommand(message, wParam, lParam) {
+			if modern != nil {
+				modern.cleanup()
+			}
+			destroyWindow.Call(hwnd)
+			return 0
+		}
 	case wmClose:
 		if modern != nil && !modern.isExiting() {
 			minimizeToTray()
@@ -361,15 +504,28 @@ func (m *modernController) setActivePage(page string) {
 	m.mu.Lock()
 	m.activePage = page
 	m.mu.Unlock()
-	if page != "files" {
+	if page == "settings" {
 		m.setNativeDropZone(0, 0, 0, 0, 1)
 	}
 }
 
-func (m *modernController) acceptsShareDrop() bool {
+func (m *modernController) setSelectedChat(id string) {
+	m.mu.Lock()
+	m.selectedChat = strings.TrimSpace(id)
+	m.mu.Unlock()
+}
+
+func (m *modernController) dropTarget() (string, string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.activePage == "files"
+	return m.activePage, m.selectedChat
+}
+
+// acceptsShareDrop is retained for the file-page behaviour covered by older
+// callers; chat drops are routed separately through dropTarget.
+func (m *modernController) acceptsShareDrop() bool {
+	page, _ := m.dropTarget()
+	return page == "files"
 }
 
 func (m *modernController) isExiting() bool {
@@ -389,7 +545,7 @@ func (m *modernController) cleanup() {
 		m.srv.SetShareChangeNotifier(nil)
 		_ = m.srv.Stop()
 		_ = m.saveShares()
-		_ = savePersistedSettings(m.settingsPath, settings)
+		_ = m.saveSettingsData(settings)
 		removeTray()
 	})
 }
@@ -397,7 +553,17 @@ func (m *modernController) cleanup() {
 func (m *modernController) saveShares() error {
 	m.sharesSaveMu.Lock()
 	defer m.sharesSaveMu.Unlock()
+	if m.db != nil {
+		return m.db.SaveShares(m.srv.Shares())
+	}
 	return m.srv.Save(m.sharesPath)
+}
+
+func (m *modernController) saveSettingsData(settings persistedSettings) error {
+	if m.db != nil {
+		return m.db.SaveSettings(settings)
+	}
+	return savePersistedSettings(m.settingsPath, settings)
 }
 
 func modernRefresh() {
@@ -436,10 +602,7 @@ func (m *modernController) getState() modernState {
 	if httpsAddress != "" {
 		baseAddress = httpsAddress
 	}
-	certificate := HTTPSCertificateStatus{Message: "尚未生成 HTTPS 证书"}
-	if certificateDir := m.httpsCertificateDir(); certificateDir != "" {
-		certificate = inspectHTTPSCertificateForHost(certificateDir, settings.AccessHost)
-	}
+	certificate := m.certificateStatus(settings.AccessHost)
 	return modernState{
 		Running:       running,
 		Transitioning: transition,
@@ -453,13 +616,23 @@ func (m *modernController) getState() modernState {
 		Addresses:     addresses,
 		Shares:        m.modernShares(baseAddress),
 		Conversations: m.modernConversations(),
-		Logs:          m.log.String(),
-		ConfigPath:    m.settingsPath,
+		Users:         m.modernUsers(),
+		Logs:          m.persistentLogs(),
+		ConfigPath:    firstNonEmpty(m.databasePath, m.settingsPath),
 	}
 }
 
 func modernServerAddress(host, port string) string {
 	return modernServerAddressForScheme("http", host, port)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func modernServerAddressForScheme(scheme, host, port string) string {
@@ -483,6 +656,27 @@ func (m *modernController) httpsCertificateDir() string {
 		return filepath.Dir(m.settingsPath)
 	}
 	return ""
+}
+
+func (m *modernController) certificateStatus(host string) HTTPSCertificateStatus {
+	if m.db != nil {
+		bundle, ok, err := m.db.LoadCertificateBundle()
+		if err != nil {
+			return HTTPSCertificateStatus{Message: "读取数据库中的 HTTPS 证书失败：" + err.Error()}
+		}
+		if ok {
+			return inspectHTTPSCertificateBundle(bundle, host)
+		}
+		return HTTPSCertificateStatus{Message: "尚未生成 HTTPS 证书"}
+	}
+	if certificateDir := m.httpsCertificateDir(); certificateDir != "" {
+		return inspectHTTPSCertificateForHost(certificateDir, host)
+	}
+	return HTTPSCertificateStatus{Message: "尚未生成 HTTPS 证书"}
+}
+
+func (m *modernController) startWithCertificate(httpListen, httpsListen string, bundle database.CertificateBundle) (server.ListenAddresses, error) {
+	return m.srv.StartWithHTTPSPEM(httpListen, httpsListen, bundle.CertPEM, bundle.KeyPEM)
 }
 
 func windowsTemporaryUploadDir() string {
@@ -538,9 +732,14 @@ func formatFileSize(size int64) string {
 }
 
 func (m *modernController) modernConversations() []modernConversation {
-	items := m.srv.ChatOverview()
+	items := append(m.srv.ChatOverview(), m.srv.ChatAdministratorOverview()...)
 	result := make([]modernConversation, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
 	for _, item := range items {
+		if _, exists := seen[item.ID]; exists {
+			continue
+		}
+		seen[item.ID] = struct{}{}
 		row := modernConversation{
 			ID:           item.ID,
 			Name:         item.Name,
@@ -548,14 +747,125 @@ func (m *modernController) modernConversations() []modernConversation {
 			MessageCount: len(item.Messages),
 			Client:       item.Client,
 		}
+		for _, message := range item.Messages {
+			if message.Sender != "admin" {
+				row.UserMessageCount++
+			}
+		}
 		if count := len(item.Messages); count > 0 {
 			last := item.Messages[count-1]
 			row.LastAt = last.SentAt
 			row.LastMessage = chatMessageSummary(last)
+			row.LastMessageID = last.ID
+			row.LastSender = last.Sender
 		}
 		result = append(result, row)
 	}
 	return result
+}
+
+func (m *modernController) modernUsers() []modernUser {
+	online := make(map[string]server.ChatClientInfo)
+	for _, client := range m.srv.ChatOnlineClients() {
+		online[client.IP] = client
+	}
+	users := m.srv.ChatUsers()
+	result := make([]modernUser, 0, len(users)+len(online))
+	seen := make(map[string]struct{}, len(users))
+	for _, user := range users {
+		displayName := user.IP
+		if strings.TrimSpace(user.Name) != "" {
+			displayName += "-" + user.Name
+		}
+		client := user.Client
+		currentClient, isOnline := online[user.IP]
+		if isOnline {
+			client = currentClient
+		}
+		result = append(result, modernUser{
+			IP:          user.IP,
+			Name:        user.Name,
+			DisplayName: displayName,
+			SearchKey:   server.ChatUserSearchKey(user.IP, user.Name),
+			Online:      isOnline,
+			Blacklisted: user.Blacklisted,
+			FirstSeen:   user.FirstSeen,
+			LastSeen:    user.LastSeen,
+			Client:      client,
+		})
+		seen[user.IP] = struct{}{}
+	}
+	for ip, client := range online {
+		if _, exists := seen[ip]; exists {
+			continue
+		}
+		result = append(result, modernUser{
+			IP:          ip,
+			DisplayName: ip,
+			SearchKey:   server.ChatUserSearchKey(ip, ""),
+			Online:      true,
+			FirstSeen:   client.ConnectedAt,
+			LastSeen:    client.ConnectedAt,
+			Client:      client,
+		})
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Online != result[j].Online {
+			return result[i].Online
+		}
+		return result[i].LastSeen.After(result[j].LastSeen)
+	})
+	return result
+}
+
+func (m *modernController) persistentLogs() string {
+	if m.db == nil {
+		return m.log.String()
+	}
+	records, err := m.db.ListAccessRecords(2000)
+	if err != nil {
+		return m.log.String() + "\n数据库访问记录读取失败：" + err.Error()
+	}
+	var builder strings.Builder
+	for _, record := range records {
+		builder.WriteString(record.At.Local().Format("2006/01/02 15:04:05"))
+		builder.WriteString("  IP=")
+		builder.WriteString(record.IP)
+		builder.WriteString("  操作=")
+		builder.WriteString(record.Operation)
+		if record.Method != "" {
+			builder.WriteString("  请求=")
+			builder.WriteString(record.Method)
+			builder.WriteByte(' ')
+			builder.WriteString(record.Path)
+		}
+		if record.Status != 0 {
+			builder.WriteString("  状态=")
+			builder.WriteString(strconv.Itoa(record.Status))
+		}
+		if record.Duration != "" {
+			builder.WriteString("  用时=")
+			builder.WriteString(record.Duration)
+		}
+		builder.WriteByte('\n')
+	}
+	diagnosticLines := make([]string, 0)
+	for _, line := range strings.Split(m.log.String(), "\n") {
+		if strings.Contains(line, "IP=") && (strings.Contains(line, "操作=") || strings.Contains(line, "请求=")) {
+			continue
+		}
+		if strings.TrimSpace(line) != "" {
+			diagnosticLines = append(diagnosticLines, line)
+		}
+	}
+	diagnostics := strings.TrimSpace(strings.Join(diagnosticLines, "\n"))
+	if diagnostics != "" {
+		if builder.Len() > 0 {
+			builder.WriteString("\n—— 程序诊断 ——\n")
+		}
+		builder.WriteString(diagnostics)
+	}
+	return builder.String()
 }
 
 func (m *modernController) saveSettings(settings persistedSettings) (modernState, error) {
@@ -581,11 +891,13 @@ func (m *modernController) saveSettings(settings persistedSettings) (modernState
 	m.srv.SetHTTPSRedirect(settings.RedirectToHTTPS, settings.AccessHost, settings.HTTPSPort)
 	m.srv.SetChatEnabled(settings.AllowChat)
 	m.srv.SetGroupChatEnabled(settings.GroupChat)
+	m.srv.SetUserListEnabled(settings.ShowUserList)
+	m.srv.SetPrivateMessagesEnabled(settings.AllowPrivateChat)
 	if app != nil {
 		app.notifyNewVisitor = settings.NotifyNewVisitor
 		app.notifyNewMessage = settings.NotifyNewMessage
 	}
-	if err = savePersistedSettings(m.settingsPath, settings); err != nil {
+	if err = m.saveSettingsData(settings); err != nil {
 		return m.getState(), fmt.Errorf("保存配置失败：%w", err)
 	}
 	modernRefresh()
@@ -596,6 +908,14 @@ func validateModernSettings(settings persistedSettings, addresses []modernAddres
 	settings.Password = strings.TrimSpace(settings.Password)
 	settings.Port = strings.TrimSpace(settings.Port)
 	settings.HTTPSPort = strings.TrimSpace(settings.HTTPSPort)
+	if !settings.AllowChat {
+		settings.GroupChat = false
+		settings.ShowUserList = false
+		settings.AllowPrivateChat = false
+	}
+	if !settings.ShowUserList {
+		settings.AllowPrivateChat = false
+	}
 	if settings.Port == "" {
 		settings.Port = "1122"
 	}
@@ -647,18 +967,25 @@ func (m *modernController) toggleServer(host, portText, httpsPortText string) (m
 			m.srv.SetHTTPSRedirect(settings.RedirectToHTTPS, settings.AccessHost, settings.HTTPSPort)
 			m.srv.SetChatEnabled(settings.AllowChat)
 			m.srv.SetGroupChatEnabled(settings.GroupChat)
+			m.srv.SetUserListEnabled(settings.ShowUserList)
+			m.srv.SetPrivateMessagesEnabled(settings.AllowPrivateChat)
+			var certificateBundle database.CertificateBundle
 			certFile, keyFile := "", ""
 			if settings.HTTPSPort != "" {
-				certificateDir := m.httpsCertificateDir()
-				certificate := inspectHTTPSCertificateForHost(certificateDir, settings.AccessHost)
-				if !certificate.Available {
+				certificate := m.certificateStatus(settings.AccessHost)
+				found := false
+				if m.db != nil {
+					certificateBundle, found, err = m.db.LoadCertificateBundle()
+				} else {
+					found = certificate.Available
+					certFile, keyFile = certificate.CertPath, certificate.KeyPath
+				}
+				if err == nil && (!found || !certificate.Available) {
 					message := strings.TrimSpace(certificate.Message)
 					if message == "" {
 						message = "HTTPS 证书尚未生成或已失效，请先点击“生成/更新证书”"
 					}
 					err = errors.New(message)
-				} else {
-					certFile, keyFile = certificate.CertPath, certificate.KeyPath
 				}
 			}
 			if err == nil {
@@ -667,7 +994,11 @@ func (m *modernController) toggleServer(host, portText, httpsPortText string) (m
 					httpsListen = net.JoinHostPort(settings.AccessHost, settings.HTTPSPort)
 				}
 				httpListen := net.JoinHostPort(settings.AccessHost, settings.Port)
-				_, err = m.srv.StartWithHTTPS(httpListen, httpsListen, certFile, keyFile)
+				if m.db != nil {
+					_, err = m.startWithCertificate(httpListen, httpsListen, certificateBundle)
+				} else {
+					_, err = m.srv.StartWithHTTPS(httpListen, httpsListen, certFile, keyFile)
+				}
 			}
 		}
 	}
@@ -693,7 +1024,7 @@ func (m *modernController) toggleServer(host, portText, httpsPortText string) (m
 		app.statusAddress = app.runningAddress
 	}
 	if err == nil {
-		_ = savePersistedSettings(m.settingsPath, currentSettings)
+		_ = m.saveSettingsData(currentSettings)
 	}
 	modernRefresh()
 	if err != nil {
@@ -728,7 +1059,20 @@ func (m *modernController) generateCertificate() (modernState, error) {
 			hosts = append(hosts, address.Host)
 		}
 	}
-	if _, err := generateHTTPSCertificate(certificateDir, hosts); err != nil {
+	if m.db != nil {
+		bundle, _, generateErr := generateHTTPSCertificateBundle(hosts)
+		if generateErr == nil {
+			generateErr = m.db.SaveCertificateBundle(bundle)
+		}
+		if generateErr != nil {
+			err := fmt.Errorf("生成 HTTPS 证书失败：%w", generateErr)
+			m.finishCertificateGeneration(settings, err)
+			return m.getState(), err
+		}
+		for _, name := range []string{httpsCAFileName, httpsCAKeyFileName, httpsCertFileName, httpsCertKeyFileName} {
+			_ = os.Remove(filepath.Join(certificateDir, name))
+		}
+	} else if _, err := generateHTTPSCertificate(certificateDir, hosts); err != nil {
 		err = fmt.Errorf("生成 HTTPS 证书失败：%w", err)
 		m.finishCertificateGeneration(settings, err)
 		return m.getState(), err
@@ -736,7 +1080,7 @@ func (m *modernController) generateCertificate() (modernState, error) {
 	if settings.HTTPSPort == "" {
 		settings.HTTPSPort = suggestedHTTPSPort(settings.Port)
 	}
-	if err := savePersistedSettings(m.settingsPath, settings); err != nil {
+	if err := m.saveSettingsData(settings); err != nil {
 		err = fmt.Errorf("证书已生成，但保存 HTTPS 端口失败：%w", err)
 		m.finishCertificateGeneration(settings, err)
 		return m.getState(), err
@@ -977,10 +1321,15 @@ func (m *modernController) copyText(value string) error {
 	return setClipboardText(app.hwnd, value)
 }
 
-func (m *modernController) clearLogs() modernState {
+func (m *modernController) clearLogs() (modernState, error) {
 	m.log.Clear()
+	if m.db != nil {
+		if err := m.db.ClearAccessRecords(); err != nil {
+			return m.getState(), err
+		}
+	}
 	modernRefresh()
-	return m.getState()
+	return m.getState(), nil
 }
 
 func (m *modernController) getConversation(id string) (server.ChatConversation, error) {
@@ -1022,9 +1371,70 @@ func (m *modernController) sendImage(id, mimeType, encoded string) error {
 	return nil
 }
 
+func (m *modernController) sendFile(id, name, mimeType, encoded string) error {
+	if comma := strings.IndexByte(encoded, ','); comma >= 0 {
+		encoded = encoded[comma+1:]
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return errors.New("文件数据无效")
+	}
+	if err = m.srv.SendChatFile(id, name, mimeType, data); err != nil {
+		return err
+	}
+	modernRefresh()
+	return nil
+}
+
+func (m *modernController) openChatAttachment(messageID string) error {
+	if m.db == nil {
+		return errors.New("聊天附件数据库尚未初始化")
+	}
+	attachmentPath, err := m.db.ChatAttachmentPath(strings.TrimSpace(messageID))
+	if err != nil {
+		return errors.New("聊天附件不存在或已被清理")
+	}
+	return exec.Command("explorer.exe", "/select,"+attachmentPath).Start()
+}
+
+func (m *modernController) setUserName(ip, name string) (modernState, error) {
+	if err := m.srv.SetChatUserName(ip, name); err != nil {
+		return m.getState(), err
+	}
+	modernRefresh()
+	return m.getState(), nil
+}
+
+func (m *modernController) setUserBlacklisted(ip string, blacklisted bool) (modernState, error) {
+	if err := m.srv.SetChatUserBlacklisted(ip, blacklisted); err != nil {
+		return m.getState(), err
+	}
+	modernRefresh()
+	return m.getState(), nil
+}
+
+func (m *modernController) clearChatHistory() (modernState, error) {
+	if err := m.srv.ClearChatHistory(); err != nil {
+		return m.getState(), err
+	}
+	if app != nil {
+		rememberChatMessages(m.srv.ChatOverview())
+	}
+	modernRefresh()
+	return m.getState(), nil
+}
+
+func (m *modernController) clearUsers() (modernState, error) {
+	if err := m.srv.ClearChatUsers(); err != nil {
+		return m.getState(), err
+	}
+	modernRefresh()
+	return m.getState(), nil
+}
+
 func (m *modernController) removeVisitor(id string) (modernState, error) {
 	if id == server.ChatGroupConversationID {
-		return m.getState(), errors.New("多人聊天会话不能删除")
+		return m.getState(), errors.New("系统群会话不能删除")
 	}
 	if !m.srv.RemoveChatVisitor(id) {
 		return m.getState(), errors.New("访客不存在或已重新连接")

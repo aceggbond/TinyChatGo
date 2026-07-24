@@ -437,6 +437,44 @@ func TestDismissedOnlineVisitorReappearsOnNextMessage(t *testing.T) {
 	}
 }
 
+func TestSystemGroupReportsOnlineClientsAndRemovesOfflineUser(t *testing.T) {
+	s := New(io.Discard)
+	s.SetGroupChatEnabled(true)
+	offlineIP := "192.0.2.88"
+	s.ObserveChatUser(ChatClientInfo{
+		IP:          offlineIP,
+		Port:        "45678",
+		Browser:     "Offline Browser",
+		OS:          "Offline OS",
+		ConnectedAt: time.Now().UTC(),
+	})
+	if !s.RemoveChatVisitor(offlineIP) {
+		t.Fatal("offline persisted user could not be removed in system-group mode")
+	}
+	if users := s.ChatUsers(); len(users) != 0 {
+		t.Fatalf("removed offline user remained: %#v", users)
+	}
+
+	s.SetChatEnabled(true)
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+	defer s.SetChatEnabled(false)
+	cookie, _ := fetchChatStatus(t, http.DefaultClient, ts.URL, "")
+	connection, _, err := dialChat(ts.URL, cookie, strings.Repeat("7", 32), "在线用户", "", ts.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	ready := readChatWire(t, connection)
+	clients := s.ChatOnlineClients()
+	if len(clients) != 1 || clients[0].IP != ready.ClientID {
+		t.Fatalf("system-group online clients = %#v, ready = %#v", clients, ready)
+	}
+	if count := s.ChatOnlineCount(); count != len(clients) {
+		t.Fatalf("online count = %d, clients = %d", count, len(clients))
+	}
+}
+
 func TestClientInfoParsesIPv6BrowserAndOS(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
 	request.RemoteAddr = "[2001:db8::25]:54321"
@@ -871,8 +909,9 @@ func TestChatOverviewAndConversationSnapshot(t *testing.T) {
 	if !ok || len(group.Messages) != 1 || !bytes.Equal(group.Messages[0].Data, imageData) {
 		t.Fatalf("group conversation snapshot = %#v, %v", group, ok)
 	}
-	if _, ok = s.ChatConversationSnapshot(olderID); ok {
-		t.Fatal("private conversation was visible in group mode")
+	privateInGroup, ok := s.ChatConversationSnapshot(olderID)
+	if !ok || privateInGroup.ID != olderID || len(privateInGroup.Messages) != 1 {
+		t.Fatalf("administrator private conversation was not available in group mode: %#v, %v", privateInGroup, ok)
 	}
 
 	s.SetGroupChatEnabled(false)

@@ -113,6 +113,21 @@ func TestGenerateHTTPSCertificateCreatesValidChainAndSANs(t *testing.T) {
 	}
 }
 
+func TestGenerateHTTPSCertificateBundleCanBeValidatedFromDatabaseBytes(t *testing.T) {
+	bundle, status, err := generateHTTPSCertificateBundle([]string{"127.0.0.1", "192.168.8.24", "localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Available || len(bundle.CAKeyPEM) == 0 || len(bundle.KeyPEM) == 0 {
+		t.Fatalf("unexpected bundle status: %#v", status)
+	}
+	for _, host := range []string{"127.0.0.1", "192.168.8.24", "localhost"} {
+		if checked := inspectHTTPSCertificateBundle(bundle, host); !checked.Available {
+			t.Fatalf("bundle did not validate for %s: %#v", host, checked)
+		}
+	}
+}
+
 func TestGenerateHTTPSCertificateReusesCAAndRenewsLeaf(t *testing.T) {
 	dir := t.TempDir()
 	first, err := generateHTTPSCertificate(dir, []string{"192.168.1.10"})

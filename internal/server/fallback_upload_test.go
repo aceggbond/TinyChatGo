@@ -115,8 +115,9 @@ func TestFallbackRootUploadRejectsOtherPostsAndDisabledUpload(t *testing.T) {
 	}
 	root := httptest.NewRecorder()
 	s.ServeHTTP(root, httptest.NewRequest(http.MethodGet, "http://example.test/", nil))
-	if strings.Contains(root.Body.String(), `id="upload"`) {
-		t.Fatal("disabled root upload area was rendered")
+	rootBody := root.Body.String()
+	if !strings.Contains(rootBody, `id="upload"`) || !strings.Contains(rootBody, `enctype="multipart/form-data" hidden`) {
+		t.Fatal("disabled root upload area was not kept hidden for client-side directory navigation")
 	}
 	if _, err := os.Stat(filepath.Join(uploadDir, "blocked.txt")); !os.IsNotExist(err) {
 		t.Fatalf("disabled upload wrote a file: %v", err)
