@@ -2,6 +2,6 @@ package appinfo
 
 const (
 	Name    = "LanChatGo"
-	Version = "1.6"
-	Tag     = "v1.6"
+	Version = "2.0"
+	Tag     = "v2.0"
 )

@@ -9,17 +9,18 @@ import (
 func TestPersistedSettingsRoundTrip(t *testing.T) {
 	filename := filepath.Join(t.TempDir(), settingsFileName)
 	want := persistedSettings{
-		Password:         "测试密码",
-		AllowUpload:      true,
-		AllowDownload:    false,
-		RedirectToHTTPS:  true,
-		AllowChat:        true,
-		GroupChat:        true,
-		NotifyNewVisitor: false,
-		NotifyNewMessage: true,
-		Port:             "7788",
-		HTTPSPort:        "7789",
-		AccessHost:       "192.168.1.8",
+		Password:            "测试密码",
+		AllowUpload:         true,
+		AllowDownload:       false,
+		RedirectToHTTPS:     true,
+		AllowChat:           true,
+		GroupChat:           true,
+		AllowClientDownload: true,
+		NotifyNewVisitor:    false,
+		NotifyNewMessage:    true,
+		Port:                "7788",
+		HTTPSPort:           "7789",
+		AccessHost:          "192.168.1.8",
 	}
 	if err := savePersistedSettings(filename, want); err != nil {
 		t.Fatal(err)

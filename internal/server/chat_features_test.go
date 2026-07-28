@@ -149,6 +149,29 @@ func TestPortalNameButtonAndOfflineEmojiPicker(t *testing.T) {
 	}
 }
 
+func TestPortalChatActionsUseCompactDropdown(t *testing.T) {
+	s := New(io.Discard)
+	s.SetChatEnabled(true)
+	response := httptest.NewRecorder()
+	s.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://example.test/", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("portal status = %d", response.Code)
+	}
+	body := response.Body.String()
+	for _, marker := range []string{
+		`id="chat-more-button"`,
+		`id="chat-more-menu"`,
+		`aria-haspopup="menu"`,
+		`setChatMoreOpen(chatMoreMenu.hidden)`,
+		`chatMoreMenu.querySelectorAll('.tool-button')`,
+		`.chat-more-menu[hidden]{display:none}`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("portal chat action dropdown missing %q", marker)
+		}
+	}
+}
+
 func TestAdministratorPrivateMessageInSystemGroupTargetsOneUser(t *testing.T) {
 	s := New(io.Discard)
 	s.SetChatEnabled(true)

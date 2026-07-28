@@ -1,4 +1,4 @@
-name: Release LanChatGo for Windows
+name: Release LanChatGo desktop builds
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  windows:
     runs-on: windows-latest
     steps:
       - name: Check out source
@@ -20,25 +20,104 @@ jobs:
         with:
           go-version: "1.20"
 
-      - name: Verify packages compile
-        run: go test ./... -run '^$'
-
-      - name: Verify current features
+      - name: Verify Windows packages
         shell: pwsh
         run: |
+          go test ./... -run '^$'
           go vet ./...
           go test ./internal/database
-          go test ./internal/server -run 'TestAdministratorManagesUserCreatedGroup|TestChatClientAdminRoundTripAndHistory|TestChatIPIdentitySharesPrivateConversationAcrossTabs|TestGroupChatBroadcastImagesAndIndependentHistory' -count=1
-          go test ./internal/gui -run 'TestCompareVersionNumbers|TestValidProjectURLIsRestrictedToRepository' -count=1
+          go test ./internal/server -run 'TestClientDownloadToggleControlsPortalAndExecutable|TestClientDownloadDetectsMacOSAndUsesArm64Release|TestPortalChatActionsUseCompactDropdown' -count=1
+          go test ./internal/gui -run 'TestConfigureClientWebView2TLSKeepsExistingArguments|TestCompareVersionNumbers|TestValidProjectURLIsRestrictedToRepository' -count=1
 
-      - name: Build Windows GUI
+      - name: Build Windows x64 server and client
         shell: pwsh
         run: |
           go build -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o LanChatGo.exe .
-          Compress-Archive -Path LanChatGo.exe -DestinationPath LanChatGo-windows-amd64.zip -Force
+          Copy-Item LanChatGo.exe LanChatGo-Client-windows-amd64.exe -Force
+          Compress-Archive -Path LanChatGo.exe,LanChatGo-Client-windows-amd64.exe -DestinationPath LanChatGo-windows-amd64.zip -Force
+
+      - name: Upload Windows release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            LanChatGo.exe
+            LanChatGo-Client-windows-amd64.exe
+            LanChatGo-windows-amd64.zip
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.20"
+
+      - name: Verify macOS ARM64 packages
+        run: |
+          go test ./... -run '^$'
+          go test ./internal/database ./internal/discovery
+
+      - name: Build macOS ARM64 client app
+        env:
+          CGO_ENABLED: "1"
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_CFLAGS: "-arch arm64"
+          CGO_CXXFLAGS: "-arch arm64"
+          CGO_LDFLAGS: "-arch arm64"
+        run: |
+          APP="LanChatGo-Client.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          go build -trimpath -buildvcs=false -ldflags "-s -w" -o "$APP/Contents/MacOS/LanChatGo-Client" .
+          cp logo.png "$APP/Contents/Resources/logo.png"
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleDisplayName</key><string>LanChatGo</string>
+            <key>CFBundleExecutable</key><string>LanChatGo-Client</string>
+            <key>CFBundleIdentifier</key><string>com.aceggbond.LanChatGo</string>
+            <key>CFBundleName</key><string>LanChatGo</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>2.0</string>
+            <key>CFBundleVersion</key><string>2.0</string>
+            <key>CFBundleIconFile</key><string>logo.png</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          PLIST
+          codesign --force --deep --sign - "$APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" LanChatGo-Client-macos-arm64.zip
+
+      - name: Upload macOS release file
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: LanChatGo-Client-macos-arm64.zip
+
+  release:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release files
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Create GitHub Release
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" LanChatGo.exe LanChatGo-windows-amd64.zip --title "LanChatGo ${{ github.ref_name }}" --generate-notes
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/LanChatGo.exe \
+            dist/LanChatGo-Client-windows-amd64.exe \
+            dist/LanChatGo-windows-amd64.zip \
+            dist/LanChatGo-Client-macos-arm64.zip \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "LanChatGo ${GITHUB_REF_NAME}" \
+            --generate-notes

@@ -202,6 +202,7 @@ func Run(logo, donation []byte) error {
 	srv.SetUserGroupCreationEnabled(settings.AllowGroupChat)
 	srv.SetUserListEnabled(settings.ShowUserList)
 	srv.SetPrivateMessagesEnabled(settings.AllowPrivateChat)
+	srv.SetClientDownloadEnabled(settings.AllowClientDownload)
 	if err = srv.SetPersistence(store); err != nil {
 		return fmt.Errorf("读取聊天与用户数据失败：%w", err)
 	}
@@ -904,6 +905,7 @@ func (m *modernController) saveSettings(settings persistedSettings) (modernState
 	m.srv.SetUserGroupCreationEnabled(settings.AllowGroupChat)
 	m.srv.SetUserListEnabled(settings.ShowUserList)
 	m.srv.SetPrivateMessagesEnabled(settings.AllowPrivateChat)
+	m.srv.SetClientDownloadEnabled(settings.AllowClientDownload)
 	if app != nil {
 		app.notifyNewVisitor = settings.NotifyNewVisitor
 		app.notifyNewMessage = settings.NotifyNewMessage

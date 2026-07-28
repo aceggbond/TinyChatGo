@@ -10,20 +10,21 @@ import (
 const settingsFileName = "hfs-go.config"
 
 type persistedSettings struct {
-	Password         string `json:"password"`
-	AllowUpload      bool   `json:"allowUpload"`
-	AllowDownload    bool   `json:"allowDownload"`
-	RedirectToHTTPS  bool   `json:"redirectToHTTPS"`
-	AllowChat        bool   `json:"allowChat"`
-	GroupChat        bool   `json:"groupChat"`
-	AllowGroupChat   bool   `json:"allowGroupChat"`
-	ShowUserList     bool   `json:"showUserList"`
-	AllowPrivateChat bool   `json:"allowPrivateChat"`
-	NotifyNewVisitor bool   `json:"notifyNewVisitor"`
-	NotifyNewMessage bool   `json:"notifyNewMessage"`
-	Port             string `json:"port,omitempty"`
-	HTTPSPort        string `json:"httpsPort,omitempty"`
-	AccessHost       string `json:"accessHost,omitempty"`
+	Password            string `json:"password"`
+	AllowUpload         bool   `json:"allowUpload"`
+	AllowDownload       bool   `json:"allowDownload"`
+	RedirectToHTTPS     bool   `json:"redirectToHTTPS"`
+	AllowChat           bool   `json:"allowChat"`
+	GroupChat           bool   `json:"groupChat"`
+	AllowGroupChat      bool   `json:"allowGroupChat"`
+	ShowUserList        bool   `json:"showUserList"`
+	AllowPrivateChat    bool   `json:"allowPrivateChat"`
+	AllowClientDownload bool   `json:"allowClientDownload"`
+	NotifyNewVisitor    bool   `json:"notifyNewVisitor"`
+	NotifyNewMessage    bool   `json:"notifyNewMessage"`
+	Port                string `json:"port,omitempty"`
+	HTTPSPort           string `json:"httpsPort,omitempty"`
+	AccessHost          string `json:"accessHost,omitempty"`
 }
 
 func defaultPersistedSettings() persistedSettings {

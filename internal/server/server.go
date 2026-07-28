@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"hfsgo/internal/appinfo"
+	"hfsgo/internal/discovery"
 )
 
 type Share struct {
@@ -43,33 +44,34 @@ type ListenAddresses struct {
 }
 
 type Server struct {
-	mu                sync.RWMutex
-	lifecycleMu       sync.Mutex
-	handlerMu         sync.Mutex
-	handlerWG         sync.WaitGroup
-	handlerAccepting  bool
-	shares            []Share
-	http              *http.Server
-	ln                net.Listener
-	https             *http.Server
-	tlsLn             net.Listener
-	runCancel         context.CancelFunc
-	logger            *log.Logger
-	password          string
-	accessVersion     uint64
-	allowUpload       bool
-	allowDownload     bool
-	allowManage       bool
-	redirectHTTP      bool
-	redirectHTTPHost  string
-	fallbackUploadDir string
-	shareChangeNotify func()
-	brandLogo         []byte
-	chat              *chatHub
-	persistence       Persistence
-	visitorMu         sync.Mutex
-	visitorSeen       map[string]time.Time
-	visitorNotify     func(ChatClientInfo)
+	mu                  sync.RWMutex
+	lifecycleMu         sync.Mutex
+	handlerMu           sync.Mutex
+	handlerWG           sync.WaitGroup
+	handlerAccepting    bool
+	shares              []Share
+	http                *http.Server
+	ln                  net.Listener
+	https               *http.Server
+	tlsLn               net.Listener
+	runCancel           context.CancelFunc
+	logger              *log.Logger
+	password            string
+	accessVersion       uint64
+	allowUpload         bool
+	allowDownload       bool
+	allowManage         bool
+	allowClientDownload bool
+	redirectHTTP        bool
+	redirectHTTPHost    string
+	fallbackUploadDir   string
+	shareChangeNotify   func()
+	brandLogo           []byte
+	chat                *chatHub
+	persistence         Persistence
+	visitorMu           sync.Mutex
+	visitorSeen         map[string]time.Time
+	visitorNotify       func(ChatClientInfo)
 }
 
 func New(logWriter io.Writer) *Server {
@@ -114,6 +116,20 @@ func (s *Server) SetAccess(password string, upload, download, manage bool) {
 	if passwordChanged {
 		s.chat.disconnect(websocketClosePolicyViolation, "access credentials changed")
 	}
+}
+
+// SetClientDownloadEnabled controls whether the browser portal exposes and
+// serves a client-mode copy of the currently running Windows executable.
+func (s *Server) SetClientDownloadEnabled(enabled bool) {
+	s.mu.Lock()
+	s.allowClientDownload = enabled
+	s.mu.Unlock()
+}
+
+func (s *Server) ClientDownloadEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.allowClientDownload
 }
 
 // SetHTTPSRedirect controls whether requests received by the plain HTTP
@@ -450,11 +466,41 @@ func (s *Server) startWithHTTPSCertificateLocked(httpAddr, httpsAddr string, cer
 	}
 
 	addresses := s.listenAddresses()
+	httpPort := listenAddressPort(addresses.HTTP)
+	httpsPort := listenAddressPort(addresses.HTTPS)
+	if err := discovery.StartResponder(runContext, func() discovery.Service {
+		s.mu.RLock()
+		redirectHTTPS := s.redirectHTTP
+		clientDownload := s.allowClientDownload
+		s.mu.RUnlock()
+		return discovery.Service{
+			Name:           appinfo.Name,
+			Version:        appinfo.Version,
+			HTTPPort:       httpPort,
+			HTTPSPort:      httpsPort,
+			RedirectHTTPS:  redirectHTTPS,
+			ClientDownload: clientDownload,
+		}
+	}); err != nil {
+		s.logger.Printf("局域网客户端自动发现不可用: %v", err)
+	}
 	s.logger.Printf("HTTP server listening on %s", addresses.HTTP)
 	if addresses.HTTPS != "" {
 		s.logger.Printf("HTTPS server listening on %s", addresses.HTTPS)
 	}
 	return addresses, nil
+}
+
+func listenAddressPort(address string) int {
+	_, portText, err := net.SplitHostPort(strings.TrimSpace(address))
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return 0
+	}
+	return port
 }
 
 func (s *Server) Stop() error {
@@ -552,6 +598,66 @@ func (s *Server) serve(protocol string, h *http.Server, ln net.Listener) {
 	}
 }
 
+func (s *Server) serveClientDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.ClientDownloadEnabled() {
+		http.NotFound(w, r)
+		return
+	}
+	platform := clientDownloadPlatform(r)
+	executable, err := os.Executable()
+	if err != nil {
+		http.Error(w, "client executable unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	filename := "LanChatGo-Client-windows-amd64.exe"
+	contentType := "application/vnd.microsoft.portable-executable"
+	downloadPath := executable
+	if platform == "macos-arm64" {
+		filename = "LanChatGo-Client-macos-arm64.zip"
+		contentType = "application/zip"
+		downloadPath = filepath.Join(filepath.Dir(executable), filename)
+		if info, statErr := os.Stat(downloadPath); statErr != nil || !info.Mode().IsRegular() {
+			releaseURL := "https://github.com/aceggbond/LanChatGo/releases/download/" + appinfo.Tag + "/" + filename
+			http.Redirect(w, r, releaseURL, http.StatusTemporaryRedirect)
+			return
+		}
+	}
+	file, err := os.Open(downloadPath)
+	if err != nil {
+		http.Error(w, "client executable unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		http.Error(w, "client executable unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeContent(w, r, filename, info.ModTime(), file)
+}
+
+func clientDownloadPlatform(r *http.Request) string {
+	if r == nil {
+		return "windows-amd64"
+	}
+	platform := strings.ToLower(strings.Trim(r.Header.Get("Sec-CH-UA-Platform"), `"' `))
+	userAgent := strings.ToLower(r.UserAgent())
+	if strings.Contains(platform, "mac") ||
+		strings.Contains(userAgent, "macintosh") ||
+		strings.Contains(userAgent, "mac os x") {
+		return "macos-arm64"
+	}
+	return "windows-amd64"
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !s.beginHTTPHandler(r.Context()) {
 		http.Error(w, "server stopping", http.StatusServiceUnavailable)
@@ -625,6 +731,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(lw, "需要访问密码", http.StatusUnauthorized)
 			return
 		}
+	}
+	if r.URL.Path == "/__hfs/client/download" {
+		operation = "下载客户端"
+		s.serveClientDownload(lw, r)
+		return
 	}
 	if r.URL.Path == "/__hfs/logo.png" {
 		operation = "读取界面资源"
@@ -882,6 +993,8 @@ func pathWithinRoot(target, root string) bool {
 
 func requestOperation(r *http.Request) string {
 	switch {
+	case r.URL.Path == "/__hfs/client/download":
+		return "下载客户端"
 	case r.URL.Path == "/__hfs/chat/ws":
 		return "建立聊天连接"
 	case r.URL.Path == "/__hfs/chat/status":
@@ -1153,21 +1266,22 @@ type entry struct {
 	Dir      bool   `json:"dir"`
 }
 type pageData struct {
-	Title, Parent string
-	Version       string
-	Entries       []entry
-	Upload        bool
-	Manage        bool
-	Chat          bool
-	Files         bool
-	UserList      bool
-	PrivateChat   bool
-	GroupChat     bool
-	LayoutClass   string
-	Query         string
-	ArchiveURL    string
-	CanUpload     bool
-	UploadHint    string
+	Title, Parent  string
+	Version        string
+	Entries        []entry
+	Upload         bool
+	Manage         bool
+	Chat           bool
+	Files          bool
+	UserList       bool
+	PrivateChat    bool
+	GroupChat      bool
+	ClientDownload bool
+	LayoutClass    string
+	Query          string
+	ArchiveURL     string
+	CanUpload      bool
+	UploadHint     string
 }
 
 func (s *Server) resetVisitorSessions() {
@@ -1243,7 +1357,7 @@ func (s *Server) renderRoot(w http.ResponseWriter, r *http.Request) {
 	chatEnabled := s.ChatEnabled()
 	userList := chatEnabled && s.UserListEnabled()
 	filesEnabled := upload || download
-	s.render(w, r, pageData{Title: "LanChatGo - 聊天与文件分享", Entries: es, Upload: rootUpload, Query: r.URL.Query().Get("q"), CanUpload: upload, UploadHint: hint, Chat: chatEnabled, Files: filesEnabled, UserList: userList, PrivateChat: userList && s.PrivateMessagesEnabled(), GroupChat: s.GroupChatEnabled(), LayoutClass: portalLayoutClass(filesEnabled, userList, chatEnabled)})
+	s.render(w, r, pageData{Title: "LanChatGo - 聊天与文件分享", Entries: es, Upload: rootUpload, Query: r.URL.Query().Get("q"), CanUpload: upload, UploadHint: hint, Chat: chatEnabled, Files: filesEnabled, UserList: userList, PrivateChat: userList && s.PrivateMessagesEnabled(), GroupChat: s.GroupChatEnabled(), ClientDownload: s.ClientDownloadEnabled(), LayoutClass: portalLayoutClass(filesEnabled, userList, chatEnabled)})
 }
 func (s *Server) renderDir(w http.ResponseWriter, r *http.Request, dir, title string) {
 	list, err := os.ReadDir(dir)
@@ -1281,7 +1395,7 @@ func (s *Server) renderDir(w http.ResponseWriter, r *http.Request, dir, title st
 	chatEnabled := s.ChatEnabled()
 	userList := chatEnabled && s.UserListEnabled()
 	filesEnabled := upload || download
-	s.render(w, r, pageData{Title: title, Parent: parent, Entries: es, Upload: upload, CanUpload: upload, Manage: manage, Query: r.URL.Query().Get("q"), ArchiveURL: base + "?archive=1", Chat: chatEnabled, Files: filesEnabled, UserList: userList, PrivateChat: userList && s.PrivateMessagesEnabled(), GroupChat: s.GroupChatEnabled(), LayoutClass: portalLayoutClass(filesEnabled, userList, chatEnabled)})
+	s.render(w, r, pageData{Title: title, Parent: parent, Entries: es, Upload: upload, CanUpload: upload, Manage: manage, Query: r.URL.Query().Get("q"), ArchiveURL: base + "?archive=1", Chat: chatEnabled, Files: filesEnabled, UserList: userList, PrivateChat: userList && s.PrivateMessagesEnabled(), GroupChat: s.GroupChatEnabled(), ClientDownload: s.ClientDownloadEnabled(), LayoutClass: portalLayoutClass(filesEnabled, userList, chatEnabled)})
 }
 
 type fileListResponse struct {
