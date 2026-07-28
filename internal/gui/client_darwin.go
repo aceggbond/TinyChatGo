@@ -3,16 +3,17 @@
 package gui
 
 /*
-#cgo CFLAGS: -x objective-c -fobjc-arc -fblocks
-#cgo LDFLAGS: -framework Cocoa -framework WebKit -framework Security
+#cgo CFLAGS: -x objective-c -fobjc-arc -fblocks -mmacosx-version-min=11.0
+#cgo LDFLAGS: -mmacosx-version-min=11.0 -framework Cocoa -framework WebKit -framework Security -framework UserNotifications
 
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
 #import <Security/Security.h>
+#import <UserNotifications/UserNotifications.h>
 #import <dispatch/dispatch.h>
 #include <stdlib.h>
 
-@interface LCGClientDelegate : NSObject <NSWindowDelegate, WKNavigationDelegate>
+@interface LCGClientDelegate : NSObject <NSWindowDelegate, WKNavigationDelegate, UNUserNotificationCenterDelegate>
 @property(nonatomic, weak) NSWindow *window;
 @end
 
@@ -43,6 +44,11 @@ static NSStatusItem *lcgStatusItem;
   }
   completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
 }
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+       willPresentNotification:(UNNotification *)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
+  completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
+}
 @end
 
 static void LCGConfigureClient(void *windowPtr, const void *logoBytes, int logoLength) {
@@ -53,6 +59,14 @@ static void LCGConfigureClient(void *windowPtr, const void *logoBytes, int logoL
   lcgClientDelegate = [LCGClientDelegate new];
   lcgClientDelegate.window = window;
   window.delegate = lcgClientDelegate;
+  UNUserNotificationCenter *notificationCenter = [UNUserNotificationCenter currentNotificationCenter];
+  notificationCenter.delegate = lcgClientDelegate;
+  [notificationCenter requestAuthorizationWithOptions:(UNAuthorizationOptionAlert |
+                                                       UNAuthorizationOptionSound)
+                                    completionHandler:^(BOOL granted, NSError *error) {
+                                      (void)granted;
+                                      (void)error;
+                                    }];
   if ([window.contentView isKindOfClass:[WKWebView class]]) {
     ((WKWebView *)window.contentView).navigationDelegate = lcgClientDelegate;
   }
@@ -85,11 +99,19 @@ static void LCGNotify(const char *titleText, const char *bodyText) {
   NSString *title = titleText ? [NSString stringWithUTF8String:titleText] : @"LanChatGo";
   NSString *body = bodyText ? [NSString stringWithUTF8String:bodyText] : @"";
   dispatch_async(dispatch_get_main_queue(), ^{
-    NSUserNotification *notification = [NSUserNotification new];
-    notification.title = title;
-    notification.informativeText = body;
-    notification.soundName = NSUserNotificationDefaultSoundName;
-    [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:notification];
+    UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+    content.title = title;
+    content.body = body;
+    content.sound = [UNNotificationSound defaultSound];
+    UNNotificationRequest *request =
+        [UNNotificationRequest requestWithIdentifier:[NSUUID UUID].UUIDString
+                                             content:content
+                                             trigger:nil];
+    [[UNUserNotificationCenter currentNotificationCenter]
+        addNotificationRequest:request
+         withCompletionHandler:^(NSError *error) {
+           (void)error;
+         }];
     [NSApp requestUserAttention:NSCriticalRequest];
   });
 }

@@ -13,10 +13,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.20"
 
@@ -37,7 +37,7 @@ jobs:
           Compress-Archive -Path LanChatGo.exe,LanChatGo-Client-windows-amd64.exe -DestinationPath LanChatGo-windows-amd64.zip -Force
 
       - name: Upload Windows release files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-release
           path: |
@@ -49,10 +49,10 @@ jobs:
     runs-on: macos-14
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.20"
 
@@ -94,7 +94,7 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$APP" LanChatGo-Client-macos-arm64.zip
 
       - name: Upload macOS release file
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-release
           path: LanChatGo-Client-macos-arm64.zip
@@ -104,20 +104,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download release files
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
 
-      - name: Create GitHub Release
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            dist/LanChatGo.exe \
-            dist/LanChatGo-Client-windows-amd64.exe \
-            dist/LanChatGo-windows-amd64.zip \
-            dist/LanChatGo-Client-macos-arm64.zip \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "LanChatGo ${GITHUB_REF_NAME}" \
-            --generate-notes
+          files=(
+            dist/LanChatGo.exe
+            dist/LanChatGo-Client-windows-amd64.exe
+            dist/LanChatGo-windows-amd64.zip
+            dist/LanChatGo-Client-macos-arm64.zip
+          )
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${files[@]}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${files[@]}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "LanChatGo ${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi
