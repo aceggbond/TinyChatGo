@@ -31,10 +31,10 @@ func TestValidProjectURLIsRestrictedToRepository(t *testing.T) {
 		}
 	}
 	for _, blocked := range []string{
-		"http://github.com/aceggbond/hfs-go",
+		"http://github.com/aceggbond/LanChatGo",
 		"https://github.com/other/repo",
-		"https://evil.example/aceggbond/hfs-go",
-		"https://github.com:444/aceggbond/hfs-go",
+		"https://evil.example/aceggbond/LanChatGo",
+		"https://github.com:444/aceggbond/LanChatGo",
 	} {
 		if validProjectURL(blocked) {
 			t.Errorf("external URL accepted: %s", blocked)

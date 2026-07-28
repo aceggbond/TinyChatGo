@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"image"
@@ -9,7 +10,7 @@ import (
 	"os"
 )
 
-const iconSize = 256
+var iconSizes = []int{16, 20, 24, 32, 40, 48, 64, 128, 256}
 
 func main() {
 	source, err := os.Open("logo.png")
@@ -21,50 +22,57 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	icon := downsample(input, iconSize, iconSize)
-	pngFile, err := os.CreateTemp("", "hfs-go-icon-*.png")
-	if err != nil {
-		panic(err)
+
+	images := make([][]byte, 0, len(iconSizes))
+	for _, size := range iconSizes {
+		var encoded bytes.Buffer
+		if err = png.Encode(&encoded, downsample(input, size, size)); err != nil {
+			panic(err)
+		}
+		images = append(images, encoded.Bytes())
 	}
-	pngName := pngFile.Name()
-	defer os.Remove(pngName)
-	if err = png.Encode(pngFile, icon); err != nil {
-		panic(err)
-	}
-	if err = pngFile.Close(); err != nil {
-		panic(err)
-	}
-	pngData, err := os.ReadFile(pngName)
-	if err != nil {
-		panic(err)
-	}
+
 	output, err := os.Create("hfs-go.ico")
 	if err != nil {
 		panic(err)
 	}
 	defer output.Close()
-	header := []byte{
-		0, 0, // reserved
-		1, 0, // icon
-		1, 0, // one image
-		0, 0, // 256 × 256
-		0, 0, // palette and reserved
-		1, 0, // color planes
-		32, 0, // bits per pixel
-	}
-	if _, err = output.Write(header); err != nil {
+	if _, err = output.Write([]byte{0, 0, 1, 0}); err != nil {
 		panic(err)
 	}
-	if err = binary.Write(output, binary.LittleEndian, uint32(len(pngData))); err != nil {
+	if err = binary.Write(output, binary.LittleEndian, uint16(len(images))); err != nil {
 		panic(err)
 	}
-	if err = binary.Write(output, binary.LittleEndian, uint32(22)); err != nil {
-		panic(err)
+
+	offset := uint32(6 + 16*len(images))
+	for index, size := range iconSizes {
+		dimension := byte(size)
+		if size == 256 {
+			dimension = 0
+		}
+		entry := []byte{
+			dimension, dimension,
+			0, 0, // palette and reserved
+			1, 0, // color planes
+			32, 0, // bits per pixel
+		}
+		if _, err = output.Write(entry); err != nil {
+			panic(err)
+		}
+		if err = binary.Write(output, binary.LittleEndian, uint32(len(images[index]))); err != nil {
+			panic(err)
+		}
+		if err = binary.Write(output, binary.LittleEndian, offset); err != nil {
+			panic(err)
+		}
+		offset += uint32(len(images[index]))
 	}
-	if _, err = output.Write(pngData); err != nil {
-		panic(err)
+	for _, data := range images {
+		if _, err = output.Write(data); err != nil {
+			panic(err)
+		}
 	}
-	fmt.Println("generated hfs-go.ico")
+	fmt.Printf("generated hfs-go.ico from logo.png with %d sizes\n", len(images))
 }
 
 func downsample(source image.Image, width, height int) *image.NRGBA {

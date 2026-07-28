@@ -19,6 +19,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"hfsgo/internal/appinfo"
 )
 
 func TestBrowseDownloadAndRange(t *testing.T) {
@@ -587,11 +589,11 @@ func TestBrowserPageHidesManagementAndIncludesImageViewer(t *testing.T) {
 	response := httptest.NewRecorder()
 	s.ServeHTTP(response, request)
 	body := response.Body.String()
-	if version := response.Header().Get("X-HFS-Go-Version"); version != "1.2" {
+	if version := response.Header().Get("X-HFS-Go-Version"); version != appinfo.Version {
 		t.Fatalf("server version header = %q", version)
 	}
-	if !strings.Contains(body, `<span class="brand-version">v1.2</span>`) {
-		t.Fatal("browser page is missing visible server version v1.2")
+	if !strings.Contains(body, `<span class="brand-version">v`+appinfo.Version+`</span>`) {
+		t.Fatalf("browser page is missing visible server version v%s", appinfo.Version)
 	}
 	for _, removed := range []string{"新建目录", `value="rename"`, `value="delete"`} {
 		if strings.Contains(body, removed) {

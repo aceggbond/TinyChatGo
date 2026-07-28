@@ -1,6 +1,7 @@
 # Build outputs
 *.exe
 *.test
+/LanChatGo*.zip
 
 # Go build cache
 .gocache/
@@ -13,6 +14,7 @@ hfs-go-ca-key.pem
 hfs-go-cert.pem
 hfs-go-key.pem
 hfs-go.db
+lanchatgo.db
 chat_files/
 
 # Local tooling and screenshots

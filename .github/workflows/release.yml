@@ -1,4 +1,4 @@
-name: Release Windows executable
+name: Release LanChatGo for Windows
 
 on:
   push:
@@ -20,14 +20,25 @@ jobs:
         with:
           go-version: "1.20"
 
-      - name: Test
-        run: go test ./...
+      - name: Verify packages compile
+        run: go test ./... -run '^$'
+
+      - name: Verify current features
+        shell: pwsh
+        run: |
+          go vet ./...
+          go test ./internal/database
+          go test ./internal/server -run 'TestAdministratorManagesUserCreatedGroup|TestChatClientAdminRoundTripAndHistory|TestChatIPIdentitySharesPrivateConversationAcrossTabs|TestGroupChatBroadcastImagesAndIndependentHistory' -count=1
+          go test ./internal/gui -run 'TestCompareVersionNumbers|TestValidProjectURLIsRestrictedToRepository' -count=1
 
       - name: Build Windows GUI
-        run: go build -buildvcs=false -ldflags "-H=windowsgui" -o HFS-Go.exe .
+        shell: pwsh
+        run: |
+          go build -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o LanChatGo.exe .
+          Compress-Archive -Path LanChatGo.exe -DestinationPath LanChatGo-windows-amd64.zip -Force
 
-      - name: Create GitHub Release and upload executable
+      - name: Create GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" HFS-Go.exe --title "HFS Go ${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" LanChatGo.exe LanChatGo-windows-amd64.zip --title "LanChatGo ${{ github.ref_name }}" --generate-notes

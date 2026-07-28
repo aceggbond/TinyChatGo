@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"log"
 	"mime"
@@ -387,7 +386,7 @@ func (s *Server) StartWithHTTPS(httpAddr, httpsAddr, certFile, keyFile string) (
 }
 
 // StartWithHTTPSPEM starts HTTPS directly from certificate bytes. It allows
-// the desktop application to keep all certificate material in hfs-go.db
+// the desktop application to keep all certificate material in lanchatgo.db
 // without creating temporary or persistent certificate files.
 func (s *Server) StartWithHTTPSPEM(httpAddr, httpsAddr string, certPEM, keyPEM []byte) (ListenAddresses, error) {
 	s.lifecycleMu.Lock()
@@ -559,7 +558,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.handlerWG.Done()
+	w.Header().Set("X-LanChatGo-Version", appinfo.Version)
+	// Keep the old header for clients that still use it to detect the server.
 	w.Header().Set("X-HFS-Go-Version", appinfo.Version)
+	w.Header().Set("Accept-CH", "Sec-CH-UA, Sec-CH-UA-Platform, Sec-CH-UA-Platform-Version")
 	start := time.Now()
 	status := 200
 	operation := requestOperation(r)
@@ -619,7 +621,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if password != "" {
 		_, pass, ok := r.BasicAuth()
 		if !ok || pass != password {
-			w.Header().Set("WWW-Authenticate", `Basic realm="HFS Go"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="LanChatGo"`)
 			http.Error(lw, "需要访问密码", http.StatusUnauthorized)
 			return
 		}
@@ -638,7 +640,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		lw.Header().Set("Content-Type", "image/png")
-		lw.Header().Set("Cache-Control", "public, max-age=86400")
+		// The logo is part of the application UI and may change between local
+		// rebuilds without a version bump. Do not let an old favicon survive.
+		lw.Header().Set("Cache-Control", "no-store")
 		lw.Header().Set("X-Content-Type-Options", "nosniff")
 		lw.Header().Set("Content-Length", strconv.Itoa(len(logo)))
 		if r.Method == http.MethodGet {
@@ -669,6 +673,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/__hfs/chat/file/") {
 		operation = "下载聊天附件"
 		s.serveChatAttachment(lw, r, clientIP)
+		return
+	}
+	if r.URL.Path == "/__hfs/chat/archive" {
+		operation = "查询聊天归档"
+		s.serveChatArchive(lw, r, clientIP)
 		return
 	}
 	if r.URL.Path == "/__hfs/chat/upload" {
@@ -877,6 +886,8 @@ func requestOperation(r *http.Request) string {
 		return "建立聊天连接"
 	case r.URL.Path == "/__hfs/chat/status":
 		return "查询聊天状态"
+	case r.URL.Path == "/__hfs/chat/archive":
+		return "查询聊天归档"
 	case strings.HasPrefix(r.URL.Path, "/__hfs/chat/file/"):
 		return "下载聊天附件"
 	case r.URL.Path == "/__hfs/logo.png":
@@ -1232,7 +1243,7 @@ func (s *Server) renderRoot(w http.ResponseWriter, r *http.Request) {
 	chatEnabled := s.ChatEnabled()
 	userList := chatEnabled && s.UserListEnabled()
 	filesEnabled := upload || download
-	s.render(w, r, pageData{Title: "HFS Go - 文件分享", Entries: es, Upload: rootUpload, Query: r.URL.Query().Get("q"), CanUpload: upload, UploadHint: hint, Chat: chatEnabled, Files: filesEnabled, UserList: userList, PrivateChat: userList && s.PrivateMessagesEnabled(), GroupChat: s.GroupChatEnabled(), LayoutClass: portalLayoutClass(filesEnabled, userList, chatEnabled)})
+	s.render(w, r, pageData{Title: "LanChatGo - 聊天与文件分享", Entries: es, Upload: rootUpload, Query: r.URL.Query().Get("q"), CanUpload: upload, UploadHint: hint, Chat: chatEnabled, Files: filesEnabled, UserList: userList, PrivateChat: userList && s.PrivateMessagesEnabled(), GroupChat: s.GroupChatEnabled(), LayoutClass: portalLayoutClass(filesEnabled, userList, chatEnabled)})
 }
 func (s *Server) renderDir(w http.ResponseWriter, r *http.Request, dir, title string) {
 	list, err := os.ReadDir(dir)
@@ -1302,6 +1313,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, d pageData) {
 	}
 	d.Version = appinfo.Version
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	if err := portalTemplate.Execute(w, d); err != nil {
 		s.logger.Print(err)
 	}
@@ -1319,7 +1331,9 @@ func formatSize(n int64) string {
 	return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
 }
 
-var pageTemplate = template.Must(template.New("page").Parse(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>{{.Title}}</title><style>
+/*
+The legacy page template below is kept in source history for reference. The active
+browser UI is portalTemplate in portal.go.
 :root{color-scheme:light;--bg:#f4f7fb;--surface:#fff;--line:#e3e9f2;--text:#172033;--muted:#718096;--blue:#2878ff;--blue2:#58a0ff;--soft:#eaf2ff;--green:#19a974;--red:#e45656;--shadow:0 10px 30px rgba(28,47,77,.08);font-family:Inter,"Segoe UI","Microsoft YaHei UI",system-ui,sans-serif}
 *{box-sizing:border-box}html,body{height:100%;margin:0}body{background:linear-gradient(145deg,#f7f9fc,#edf3fa);color:var(--text);overflow:hidden}button,input,textarea{font:inherit}a{color:inherit;text-decoration:none}button,.btn{border:1px solid var(--line);border-radius:10px;background:#fff;color:#35435a;padding:9px 14px;font-weight:680;cursor:pointer;transition:.15s}.btn:hover,button:hover:not(:disabled){border-color:#b8d3ff;color:var(--blue);transform:translateY(-1px)}button:disabled{cursor:not-allowed;opacity:.48}.primary,.tools button{border-color:var(--blue);background:linear-gradient(135deg,var(--blue),var(--blue2));color:#fff;box-shadow:0 7px 16px rgba(40,120,255,.18)}
 .topbar{height:78px;display:flex;align-items:center;padding:0 clamp(18px,3vw,40px);background:rgba(255,255,255,.96);border-bottom:1px solid var(--line);box-shadow:0 4px 18px rgba(34,53,84,.05)}.brand{display:flex;align-items:center;gap:13px}.brand-logo{width:46px;height:46px;border-radius:14px;object-fit:cover;box-shadow:0 8px 22px rgba(31,190,165,.2)}.brand-name{font-size:21px;font-weight:800}.brand-version{display:inline-flex;margin-left:7px;padding:2px 7px;border-radius:999px;background:var(--soft);color:var(--blue);font-size:10px;vertical-align:middle}.brand-sub{margin-top:2px;color:var(--muted);font-size:12px}.top-chip{margin-left:auto;display:flex;align-items:center;gap:8px;padding:9px 13px;border-radius:12px;background:#eaf9f3;color:#16875f;font-size:13px}.top-chip:before{content:"";width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 5px rgba(25,169,116,.1)}
@@ -1330,7 +1344,7 @@ var pageTemplate = template.Must(template.New("page").Parse(`<!doctype html><htm
 @media(max-width:900px){html,body{height:auto}body{overflow:auto}.portal-grid{height:auto;min-height:0;grid-template-columns:1fr}.workspace-card{min-height:620px}.top-chip{display:none}.file-panel{max-height:760px}.chat-panel{height:720px}}
 @media(max-width:560px){.topbar{height:68px;padding:0 13px}.brand-logo{width:40px;height:40px}.brand-name{font-size:18px}.portal-grid{width:calc(100% - 20px);margin:10px auto;gap:10px}.workspace-card{border-radius:14px}.section-head{min-height:68px;padding:12px}.tools{align-items:stretch}.tools form{width:100%}.tools form:first-child{flex-basis:auto}.tools input{flex:1}.row{grid-template-columns:minmax(0,1fr) auto}.row .size,.row .modified{display:none}.upload-drop{flex-direction:column}.chat-form{grid-template-columns:1fr}.chat-form>button{width:100%}}
 </style></head><body>
-<header class="topbar"><div class="brand"><img class="brand-logo" src="/__hfs/logo.png" alt="HFS Go"><div><div class="brand-name">HFS Go <span class="brand-version">v{{.Version}}</span></div><div class="brand-sub">轻量、安全的局域网文件分享与聊天</div></div></div><div class="top-chip">服务已连接</div></header>
+<header class="topbar"><div class="brand"><img class="brand-logo" src="/__hfs/logo.png" alt="LanChatGo"><div><div class="brand-name">LanChatGo <span class="brand-version">v{{.Version}}</span></div><div class="brand-sub">局域网聊天与文件分享</div></div></div><div class="top-chip">服务已连接</div></header>
 <main class="portal-grid">
 <section class="workspace-card file-panel" aria-label="共享文件">
 <div class="section-head"><div class="section-icon">▤</div><div class="section-copy"><div class="section-title">共享文件</div><div class="section-subtitle">{{.Title}}</div></div></div>
@@ -1425,3 +1439,4 @@ textBox.addEventListener('paste',function(event){var clipboard=event.clipboardDa
 var chatDragDepth=0;panel.addEventListener('dragenter',function(event){if(!event.dataTransfer||!event.dataTransfer.types||Array.prototype.indexOf.call(event.dataTransfer.types,'Files')<0)return;event.preventDefault();chatDragDepth++;panel.classList.add('dragging')});panel.addEventListener('dragover',function(event){if(!panel.classList.contains('dragging'))return;event.preventDefault();event.dataTransfer.dropEffect='copy'});panel.addEventListener('dragleave',function(event){if(!panel.classList.contains('dragging'))return;event.preventDefault();chatDragDepth=Math.max(0,chatDragDepth-1);if(!chatDragDepth)panel.classList.remove('dragging')});panel.addEventListener('drop',function(event){if(!event.dataTransfer)return;event.preventDefault();chatDragDepth=0;panel.classList.remove('dragging');sendImageFiles(event.dataTransfer.files)});
 	window.addEventListener('online',function(){reconnectDelay=1000;connect();pollStatus()});window.addEventListener('focus',updateNotificationSubscriptionUI);document.addEventListener('visibilitychange',function(){if(!document.hidden){updateNotificationSubscriptionUI();markRead();clearTimeout(statusTimer);pollStatus()}});initUpload();updateMode();updateBadge();updateControls();updateNotificationSubscriptionUI();pollStatus();
 })();</script></body></html>`))
+*/

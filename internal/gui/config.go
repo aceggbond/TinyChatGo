@@ -16,6 +16,7 @@ type persistedSettings struct {
 	RedirectToHTTPS  bool   `json:"redirectToHTTPS"`
 	AllowChat        bool   `json:"allowChat"`
 	GroupChat        bool   `json:"groupChat"`
+	AllowGroupChat   bool   `json:"allowGroupChat"`
 	ShowUserList     bool   `json:"showUserList"`
 	AllowPrivateChat bool   `json:"allowPrivateChat"`
 	NotifyNewVisitor bool   `json:"notifyNewVisitor"`
@@ -30,7 +31,11 @@ func defaultPersistedSettings() persistedSettings {
 		AllowDownload:    true,
 		NotifyNewVisitor: true,
 		NotifyNewMessage: true,
-		Port:             "1122",
+		Port:             "80",
+		HTTPSPort:        "443",
+		AllowChat:        true,
+		GroupChat:        true,
+		AllowGroupChat:   true,
 	}
 }
 
@@ -47,7 +52,10 @@ func loadPersistedSettings(filename string) (persistedSettings, error) {
 		return defaultPersistedSettings(), err
 	}
 	if settings.Port == "" {
-		settings.Port = "1122"
+		settings.Port = "80"
+	}
+	if settings.HTTPSPort == "" {
+		settings.HTTPSPort = "443"
 	}
 	return settings, nil
 }

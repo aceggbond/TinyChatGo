@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	projectURL          = "https://github.com/aceggbond/hfs-go"
-	latestReleaseAPIURL = "https://api.github.com/repos/aceggbond/hfs-go/releases/latest"
+	projectURL          = "https://github.com/aceggbond/LanChatGo"
+	latestReleaseAPIURL = "https://api.github.com/repos/aceggbond/LanChatGo/releases/latest"
 	maxReleaseResponse  = 1 << 20
 )
 
@@ -40,7 +40,7 @@ func (m *modernController) checkUpdate() (modernUpdateStatus, error) {
 		return status, err
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("User-Agent", "HFS-Go/"+appinfo.Version)
+	request.Header.Set("User-Agent", "LanChatGo/"+appinfo.Version)
 	response, err := (&http.Client{Timeout: 12 * time.Second}).Do(request)
 	if err != nil {
 		return status, fmt.Errorf("连接 GitHub 失败：%w", err)
@@ -123,12 +123,12 @@ func validProjectURL(rawURL string) bool {
 		return false
 	}
 	path := strings.ToLower(strings.TrimSuffix(parsed.EscapedPath(), "/"))
-	return path == "/aceggbond/hfs-go" || strings.HasPrefix(path, "/aceggbond/hfs-go/")
+	return path == "/aceggbond/lanchatgo" || strings.HasPrefix(path, "/aceggbond/lanchatgo/")
 }
 
 func (m *modernController) openProjectURL(rawURL string) error {
 	if !validProjectURL(rawURL) {
-		return errors.New("只能打开 HFS Go 的 GitHub 项目地址")
+		return errors.New("只能打开 LanChatGo 的 GitHub 项目地址")
 	}
 	return exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", rawURL).Start()
 }

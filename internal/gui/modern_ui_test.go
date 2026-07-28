@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"hfsgo/internal/appinfo"
 )
 
 func TestCompactLogoKeepsModernHTMLBelowWebViewLimit(t *testing.T) {
@@ -112,7 +114,7 @@ func TestModernImageViewerNativeDropAndAboutPage(t *testing.T) {
 		`window.hfsSetDropZone(`,
 		`版本 {{VERSION}}`,
 		`这是一个轻量、安全的局域网文件分享与聊天系统`,
-		`https://github.com/aceggbond/hfs-go`,
+		`https://github.com/aceggbond/LanChatGo`,
 		`id="check-update"`,
 		`window.hfsCheckUpdate()`,
 		`src="{{DONATION}}"`,
@@ -142,8 +144,8 @@ func TestRealEmbeddedImagesKeepModernHTMLBelowWebViewLimit(t *testing.T) {
 	if len(html) >= 500<<10 {
 		t.Fatalf("modern HTML with embedded images is too large: %d bytes", len(html))
 	}
-	if !strings.Contains(html, "版本 1.2") {
-		t.Fatal("rendered about page is missing version 1.2")
+	if !strings.Contains(html, "版本 "+appinfo.Version) {
+		t.Fatalf("rendered about page is missing version %s", appinfo.Version)
 	}
 }
 

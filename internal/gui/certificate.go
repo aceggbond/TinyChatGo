@@ -79,13 +79,13 @@ func generateHTTPSCertificateBundle(hosts []string) (database.CertificateBundle,
 	if !status.Available {
 		return database.CertificateBundle{}, status, fmt.Errorf("生成后的 HTTPS 证书校验失败：%s", status.Message)
 	}
-	status.Message = "HTTPS 证书已生成并覆盖保存到 hfs-go.db"
+	status.Message = "HTTPS 证书已生成并覆盖保存到 lanchatgo.db"
 	return bundle, status, nil
 }
 
 func inspectHTTPSCertificateBundle(bundle database.CertificateBundle, host string) HTTPSCertificateStatus {
 	status := HTTPSCertificateStatus{
-		CAPath: "hfs-go.db", CAKeyPath: "hfs-go.db", CertPath: "hfs-go.db", KeyPath: "hfs-go.db",
+		CAPath: "lanchatgo.db", CAKeyPath: "lanchatgo.db", CertPath: "lanchatgo.db", KeyPath: "lanchatgo.db",
 	}
 	now := time.Now()
 	caBlock, _ := pem.Decode(bundle.CACertPEM)
@@ -120,7 +120,7 @@ func inspectHTTPSCertificateBundle(bundle database.CertificateBundle, host strin
 	status.Available = true
 	status.ExpiresAt = leaf.NotAfter
 	status.Fingerprint = certificateFingerprint(leaf.Raw)
-	status.Message = "HTTPS 证书可用（保存在 hfs-go.db）"
+	status.Message = "HTTPS 证书可用（保存在 lanchatgo.db）"
 	return status
 }
 
@@ -301,7 +301,7 @@ func createHTTPSCA(now time.Time) (*x509.Certificate, *ecdsa.PrivateKey, []byte,
 	}
 	template := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "HFS Go Local CA", Organization: []string{"HFS Go"}},
+		Subject:               pkix.Name{CommonName: "LanChatGo Local CA", Organization: []string{"LanChatGo"}},
 		NotBefore:             now.Add(-5 * time.Minute),
 		NotAfter:              now.Add(10 * 365 * 24 * time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
@@ -346,7 +346,7 @@ func createHTTPSLeaf(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, ips []ne
 	}
 	template := &x509.Certificate{
 		SerialNumber:   serial,
-		Subject:        pkix.Name{CommonName: "HFS Go Local Server", Organization: []string{"HFS Go"}},
+		Subject:        pkix.Name{CommonName: "LanChatGo Local Server", Organization: []string{"LanChatGo"}},
 		NotBefore:      now.Add(-5 * time.Minute),
 		NotAfter:       notAfter,
 		KeyUsage:       x509.KeyUsageDigitalSignature,

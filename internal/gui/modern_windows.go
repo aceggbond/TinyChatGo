@@ -3,9 +3,13 @@
 package gui
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	"image/png"
 	"net"
 	"net/url"
 	"os"
@@ -82,6 +86,7 @@ type modernState struct {
 	Addresses     []modernAddress        `json:"addresses"`
 	Shares        []modernShare          `json:"shares"`
 	Conversations []modernConversation   `json:"conversations"`
+	Groups        []server.ChatGroup     `json:"groups"`
 	Users         []modernUser           `json:"users"`
 	Logs          string                 `json:"logs"`
 	ConfigPath    string                 `json:"configPath"`
@@ -135,7 +140,15 @@ func Run(logo, donation []byte) error {
 	baseDir := filepath.Dir(executable)
 	settingsPath := filepath.Join(baseDir, settingsFileName)
 	sharesPath := filepath.Join(baseDir, "hfsgo.json")
-	databasePath := filepath.Join(baseDir, "hfs-go.db")
+	databasePath := filepath.Join(baseDir, "lanchatgo.db")
+	legacyDatabasePath := filepath.Join(baseDir, "hfs-go.db")
+	if _, statErr := os.Stat(databasePath); errors.Is(statErr, os.ErrNotExist) {
+		if _, legacyErr := os.Stat(legacyDatabasePath); legacyErr == nil {
+			if renameErr := os.Rename(legacyDatabasePath, databasePath); renameErr != nil {
+				return fmt.Errorf("迁移旧版数据库失败：%w", renameErr)
+			}
+		}
+	}
 	store, err := database.Open(databasePath)
 	if err != nil {
 		return fmt.Errorf("无法创建或打开持久化数据库：%w", err)
@@ -178,10 +191,15 @@ func Run(logo, donation []byte) error {
 	if settingsErr != nil {
 		_, _ = fmt.Fprintf(buffer, "%s 配置文件无效，已使用安全默认值：%v\n", time.Now().Format("2006/01/02 15:04:05"), settingsErr)
 	}
-	srv.SetAccess(settings.Password, settings.AllowUpload, settings.AllowDownload, false)
+	settings.AllowUpload = false
+	settings.AllowDownload = false
+	settings.AllowChat = true
+	settings.GroupChat = true
+	srv.SetAccess(settings.Password, false, false, false)
 	srv.SetHTTPSRedirect(settings.RedirectToHTTPS, settings.AccessHost, settings.HTTPSPort)
-	srv.SetChatEnabled(settings.AllowChat)
+	srv.SetChatEnabled(true)
 	srv.SetGroupChatEnabled(settings.GroupChat)
+	srv.SetUserGroupCreationEnabled(settings.AllowGroupChat)
 	srv.SetUserListEnabled(settings.ShowUserList)
 	srv.SetPrivateMessagesEnabled(settings.AllowPrivateChat)
 	if err = srv.SetPersistence(store); err != nil {
@@ -216,10 +234,10 @@ func Run(logo, donation []byte) error {
 
 	view := webview.NewWithOptions(webview.WebViewOptions{
 		Debug:     false,
-		DataPath:  filepath.Join(os.TempDir(), "hfs-go-webview2"),
+		DataPath:  filepath.Join(os.TempDir(), "lanchatgo-webview2"),
 		AutoFocus: true,
 		WindowOptions: webview.WindowOptions{
-			Title:  "HFS Go",
+			Title:  "LanChatGo",
 			Width:  1240,
 			Height: 820,
 			IconId: modernIconResourceID,
@@ -244,12 +262,9 @@ func Run(logo, donation []byte) error {
 		tempUploadDir:  tempUploadDir,
 		certificateDir: baseDir,
 		addresses:      addressOptions,
-		activePage:     "chat",
+		activePage:     "users",
 	}
 	modern = controller
-	if dropErr := controller.createNativeDropWindow(HWND(window)); dropErr != nil {
-		_, _ = fmt.Fprintf(buffer, "%s 原生拖拽区域创建失败：%v\n", time.Now().Format("2006/01/02 15:04:05"), dropErr)
-	}
 	srv.SetShareChangeNotifier(func() {
 		if saveErr := controller.saveShares(); saveErr != nil {
 			_, _ = fmt.Fprintf(buffer, "%s 上传分享列表保存失败：%v\n", time.Now().Format("2006/01/02 15:04:05"), saveErr)
@@ -292,29 +307,23 @@ func Run(logo, donation []byte) error {
 		"hfsGetState":            controller.getState,
 		"hfsSaveSettings":        controller.saveSettings,
 		"hfsToggleServer":        controller.toggleServer,
-		"hfsAddFile":             controller.addFile,
-		"hfsAddFolder":           controller.addFolder,
-		"hfsRemoveShares":        controller.removeShares,
-		"hfsRenameShare":         controller.renameShare,
-		"hfsOpenShare":           controller.openShare,
-		"hfsRevealShare":         controller.revealShare,
-		"hfsOpenBrowser":         controller.openBrowser,
 		"hfsGenerateCertificate": controller.generateCertificate,
 		"hfsCopyText":            controller.copyText,
 		"hfsClearLogs":           controller.clearLogs,
-		"hfsGetConversation":     controller.getConversation,
-		"hfsSendMessage":         controller.sendMessage,
-		"hfsSendImage":           controller.sendImage,
-		"hfsSendFile":            controller.sendFile,
 		"hfsOpenChatAttachment":  controller.openChatAttachment,
+		"hfsListArchives":        controller.listArchives,
+		"hfsDeleteArchive":       controller.deleteArchive,
+		"hfsGetArchiveThumbnail": controller.archiveThumbnail,
 		"hfsRemoveVisitor":       controller.removeVisitor,
 		"hfsSetUserName":         controller.setUserName,
 		"hfsSetUserBlacklisted":  controller.setUserBlacklisted,
+		"hfsRenameGroup":         controller.renameGroup,
+		"hfsRemoveGroupMember":   controller.removeGroupMember,
+		"hfsDeleteGroup":         controller.deleteGroup,
 		"hfsClearChatHistory":    controller.clearChatHistory,
 		"hfsClearUsers":          controller.clearUsers,
 		"hfsSetActivePage":       controller.setActivePage,
 		"hfsSetSelectedChat":     controller.setSelectedChat,
-		"hfsSetDropZone":         controller.setNativeDropZone,
 		"hfsCheckUpdate":         controller.checkUpdate,
 		"hfsOpenProjectURL":      controller.openProjectURL,
 	}
@@ -498,7 +507,7 @@ func modernWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr
 }
 
 func (m *modernController) setActivePage(page string) {
-	if page != "chat" && page != "files" && page != "settings" {
+	if page != "users" && page != "groups" && page != "archives" && page != "settings" {
 		return
 	}
 	m.mu.Lock()
@@ -616,6 +625,7 @@ func (m *modernController) getState() modernState {
 		Addresses:     addresses,
 		Shares:        m.modernShares(baseAddress),
 		Conversations: m.modernConversations(),
+		Groups:        m.srv.ChatGroups(),
 		Users:         m.modernUsers(),
 		Logs:          m.persistentLogs(),
 		ConfigPath:    firstNonEmpty(m.databasePath, m.settingsPath),
@@ -643,7 +653,7 @@ func modernServerAddressForScheme(scheme, host, port string) string {
 		host = "127.0.0.1"
 	}
 	if port == "" {
-		port = "1122"
+		port = "80"
 	}
 	return (&url.URL{Scheme: scheme, Host: net.JoinHostPort(host, port)}).String()
 }
@@ -887,10 +897,11 @@ func (m *modernController) saveSettings(settings persistedSettings) (modernState
 	m.lastError = ""
 	m.mu.Unlock()
 
-	m.srv.SetAccess(settings.Password, settings.AllowUpload, settings.AllowDownload, false)
+	m.srv.SetAccess(settings.Password, false, false, false)
 	m.srv.SetHTTPSRedirect(settings.RedirectToHTTPS, settings.AccessHost, settings.HTTPSPort)
-	m.srv.SetChatEnabled(settings.AllowChat)
+	m.srv.SetChatEnabled(true)
 	m.srv.SetGroupChatEnabled(settings.GroupChat)
+	m.srv.SetUserGroupCreationEnabled(settings.AllowGroupChat)
 	m.srv.SetUserListEnabled(settings.ShowUserList)
 	m.srv.SetPrivateMessagesEnabled(settings.AllowPrivateChat)
 	if app != nil {
@@ -908,16 +919,18 @@ func validateModernSettings(settings persistedSettings, addresses []modernAddres
 	settings.Password = strings.TrimSpace(settings.Password)
 	settings.Port = strings.TrimSpace(settings.Port)
 	settings.HTTPSPort = strings.TrimSpace(settings.HTTPSPort)
-	if !settings.AllowChat {
-		settings.GroupChat = false
-		settings.ShowUserList = false
-		settings.AllowPrivateChat = false
-	}
+	settings.AllowChat = true
+	settings.AllowUpload = false
+	settings.AllowDownload = false
+	settings.GroupChat = true
 	if !settings.ShowUserList {
 		settings.AllowPrivateChat = false
 	}
 	if settings.Port == "" {
-		settings.Port = "1122"
+		settings.Port = "80"
+	}
+	if settings.HTTPSPort == "" {
+		settings.HTTPSPort = "443"
 	}
 	httpPort, err := strconv.Atoi(settings.Port)
 	if err != nil || httpPort < 1 || httpPort > 65535 {
@@ -965,8 +978,9 @@ func (m *modernController) toggleServer(host, portText, httpsPortText string) (m
 		if err == nil {
 			m.srv.SetAccess(settings.Password, settings.AllowUpload, settings.AllowDownload, false)
 			m.srv.SetHTTPSRedirect(settings.RedirectToHTTPS, settings.AccessHost, settings.HTTPSPort)
-			m.srv.SetChatEnabled(settings.AllowChat)
+			m.srv.SetChatEnabled(true)
 			m.srv.SetGroupChatEnabled(settings.GroupChat)
+			m.srv.SetUserGroupCreationEnabled(settings.AllowGroupChat)
 			m.srv.SetUserListEnabled(settings.ShowUserList)
 			m.srv.SetPrivateMessagesEnabled(settings.AllowPrivateChat)
 			var certificateBundle database.CertificateBundle
@@ -1104,13 +1118,10 @@ func (m *modernController) finishCertificateGeneration(settings persistedSetting
 
 func suggestedHTTPSPort(httpPortText string) string {
 	httpPort, err := strconv.Atoi(strings.TrimSpace(httpPortText))
-	if err == nil && httpPort >= 1 && httpPort < 65535 {
-		return strconv.Itoa(httpPort + 1)
+	if err == nil && httpPort == 443 {
+		return "8443"
 	}
-	if httpPort == 1123 {
-		return "1124"
-	}
-	return "1123"
+	return "443"
 }
 
 func (m *modernController) addFile() (modernState, error) {
@@ -1397,6 +1408,81 @@ func (m *modernController) openChatAttachment(messageID string) error {
 	return exec.Command("explorer.exe", "/select,"+attachmentPath).Start()
 }
 
+func (m *modernController) listArchives(kind, query, from, to string, page int) (server.ChatArchivePage, error) {
+	if m.db == nil {
+		return server.ChatArchivePage{}, errors.New("聊天归档数据库尚未初始化")
+	}
+	parseDate := func(raw string, endOfDay bool) time.Time {
+		value, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(raw), time.Local)
+		if err != nil {
+			return time.Time{}
+		}
+		if endOfDay {
+			value = value.Add(24*time.Hour - time.Nanosecond)
+		}
+		return value.UTC()
+	}
+	return m.db.ListChatAttachments(server.ChatArchiveQuery{
+		Kind: strings.TrimSpace(kind), Query: strings.TrimSpace(query),
+		From: parseDate(from, false), To: parseDate(to, true),
+		Page: page, PageSize: 36,
+	})
+}
+
+func (m *modernController) archiveThumbnail(messageID string) (string, error) {
+	if m.db == nil {
+		return "", errors.New("聊天归档数据库尚未初始化")
+	}
+	attachment, err := m.db.OpenChatAttachment(strings.TrimSpace(messageID))
+	if err != nil {
+		return "", errors.New("图片归档不存在")
+	}
+	defer attachment.Reader.Close()
+	source, _, err := image.Decode(attachment.Reader)
+	if err != nil {
+		return "", errors.New("图片归档无法读取")
+	}
+	bounds := source.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return "", errors.New("图片尺寸无效")
+	}
+	maxSize := 320
+	targetWidth, targetHeight := maxSize, maxSize
+	if width > height {
+		targetHeight = height * maxSize / width
+	} else if height > width {
+		targetWidth = width * maxSize / height
+	}
+	if targetWidth < 1 {
+		targetWidth = 1
+	}
+	if targetHeight < 1 {
+		targetHeight = 1
+	}
+	target := image.NewNRGBA(image.Rect(0, 0, targetWidth, targetHeight))
+	for y := 0; y < targetHeight; y++ {
+		for x := 0; x < targetWidth; x++ {
+			sx := bounds.Min.X + x*width/targetWidth
+			sy := bounds.Min.Y + y*height/targetHeight
+			target.Set(x, y, source.At(sx, sy))
+		}
+	}
+	var output bytes.Buffer
+	if err = png.Encode(&output, target); err != nil {
+		return "", err
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(output.Bytes()), nil
+}
+
+func (m *modernController) deleteArchive(messageID string) error {
+	if err := m.srv.DeleteChatMessage(strings.TrimSpace(messageID)); err != nil {
+		return err
+	}
+	modernRefresh()
+	return nil
+}
+
 func (m *modernController) setUserName(ip, name string) (modernState, error) {
 	if err := m.srv.SetChatUserName(ip, name); err != nil {
 		return m.getState(), err
@@ -1407,6 +1493,30 @@ func (m *modernController) setUserName(ip, name string) (modernState, error) {
 
 func (m *modernController) setUserBlacklisted(ip string, blacklisted bool) (modernState, error) {
 	if err := m.srv.SetChatUserBlacklisted(ip, blacklisted); err != nil {
+		return m.getState(), err
+	}
+	modernRefresh()
+	return m.getState(), nil
+}
+
+func (m *modernController) renameGroup(groupID, name string) (modernState, error) {
+	if err := m.srv.RenameChatGroup(groupID, name); err != nil {
+		return m.getState(), err
+	}
+	modernRefresh()
+	return m.getState(), nil
+}
+
+func (m *modernController) removeGroupMember(groupID, memberIP string) (modernState, error) {
+	if err := m.srv.RemoveChatGroupMember(groupID, memberIP); err != nil {
+		return m.getState(), err
+	}
+	modernRefresh()
+	return m.getState(), nil
+}
+
+func (m *modernController) deleteGroup(groupID string) (modernState, error) {
+	if err := m.srv.DeleteChatGroup(groupID); err != nil {
 		return m.getState(), err
 	}
 	modernRefresh()

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,34 @@ const (
 	chatMaxNameRunes         = 32
 )
 
+func normalizeGroupMembers(members []string) []string {
+	seen := make(map[string]struct{}, len(members))
+	result := make([]string, 0, len(members))
+	for _, member := range members {
+		member = normalizeChatIP(member)
+		if member == "" {
+			continue
+		}
+		if _, ok := seen[member]; ok {
+			continue
+		}
+		seen[member] = struct{}{}
+		result = append(result, member)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func containsIP(members []string, ip string) bool {
+	ip = normalizeChatIP(ip)
+	for _, member := range members {
+		if normalizeChatIP(member) == ip {
+			return true
+		}
+	}
+	return false
+}
+
 // SetPersistence attaches the application's durable store and restores users
 // plus the most recent messages for every conversation.
 func (s *Server) SetPersistence(persistence Persistence) error {
@@ -42,13 +71,40 @@ func (s *Server) SetPersistence(persistence Persistence) error {
 	if err != nil {
 		return err
 	}
+	remarks, err := persistence.LoadChatRemarks()
+	if err != nil {
+		return err
+	}
+	var groups []ChatGroup
+	if groupStore, ok := persistence.(ChatGroupPersistence); ok {
+		groups, err = groupStore.LoadChatGroups()
+		if err != nil {
+			return err
+		}
+	}
 	s.chat.mu.Lock()
 	s.chat.persistence = persistence
 	s.chat.users = make(map[string]*ChatUser)
 	s.chat.conversations = make(map[string]*chatConversationState)
 	s.chat.direct = make(map[string]*chatConversationState)
+	s.chat.userGroups = make(map[string]*chatUserGroupState)
+	s.chat.remarks = make(map[string]map[string]string)
 	s.chat.group.messages = nil
 	s.chat.group.historyBytes = 0
+	for _, group := range s.chat.userGroups {
+		group.messages = nil
+		group.historyBytes = 0
+	}
+	for _, group := range groups {
+		group.ID = strings.TrimSpace(group.ID)
+		group.Name = strings.TrimSpace(group.Name)
+		group.OwnerIP = normalizeChatIP(group.OwnerIP)
+		group.Members = normalizeGroupMembers(group.Members)
+		if group.ID == "" || group.Name == "" || group.OwnerIP == "" || !containsIP(group.Members, group.OwnerIP) {
+			continue
+		}
+		s.chat.userGroups[group.ID] = &chatUserGroupState{ChatGroup: group}
+	}
 	for index := range users {
 		user := users[index]
 		user.IP = normalizeChatIP(user.IP)
@@ -63,6 +119,17 @@ func (s *Server) SetPersistence(persistence Persistence) error {
 			client:  user.Client,
 			updated: user.LastSeen,
 		}
+	}
+	for _, remark := range remarks {
+		owner := normalizeChatIP(remark.OwnerIP)
+		target := normalizeChatIP(remark.TargetIP)
+		if owner == "" || target == "" || owner == target || strings.TrimSpace(remark.Name) == "" {
+			continue
+		}
+		if s.chat.remarks[owner] == nil {
+			s.chat.remarks[owner] = make(map[string]string)
+		}
+		s.chat.remarks[owner][target] = remark.Name
 	}
 	for _, stored := range messages {
 		message := stored.Message
@@ -90,6 +157,15 @@ func (s *Server) SetPersistence(persistence Persistence) error {
 				conversation = &chatConversationState{id: stored.ConversationID, name: "私信"}
 				s.chat.direct[stored.ConversationID] = conversation
 			}
+		case strings.HasPrefix(stored.ConversationID, chatUserGroupPrefix):
+			groupID := strings.TrimPrefix(stored.ConversationID, chatUserGroupPrefix)
+			group := s.chat.userGroups[groupID]
+			if group == nil {
+				continue
+			}
+			group.messages = append(group.messages, message)
+			group.historyBytes += chatMessageHistoryBytes(message)
+			continue
 		default:
 			continue
 		}
@@ -203,6 +279,53 @@ func (s *Server) SetChatUserName(ip, name string) error {
 	return nil
 }
 
+func (h *chatHub) updatePeerRemark(peer *chatPeer, targetIP, name string) error {
+	targetIP = normalizeChatIP(targetIP)
+	if targetIP == "" || targetIP == peer.ip {
+		return errors.New("备注目标无效")
+	}
+	h.mu.Lock()
+	if !h.enabled || h.peers[peer.id] != peer {
+		h.mu.Unlock()
+		return errors.New("聊天连接已关闭")
+	}
+	if h.remarks[peer.ip] == nil {
+		h.remarks[peer.ip] = make(map[string]string)
+	}
+	if name == "" {
+		delete(h.remarks[peer.ip], targetIP)
+	} else {
+		h.remarks[peer.ip][targetIP] = name
+	}
+	persistence := h.persistence
+	remarks := h.remarksForPeerLocked(peer.ip)
+	users := h.publicUsersLocked(peer.ip)
+	recipients := append([]*chatPeer(nil), h.peersForIPLocked(peer.ip)...)
+	userListEnabled, privateEnabled := h.userListEnabled, h.privateEnabled
+	h.mu.Unlock()
+	var err error
+	if persistence != nil {
+		if name == "" {
+			err = persistence.DeleteChatRemark(peer.ip, targetIP)
+		} else {
+			err = persistence.SaveChatRemark(ChatRemark{
+				OwnerIP: peer.ip, TargetIP: targetIP, Name: name, Updated: time.Now().UTC(),
+			})
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("保存备注失败：%w", err)
+	}
+	update := chatWireMessage{
+		Type: "remarks", Remarks: remarks, Users: users,
+		UserListEnabled: userListEnabled, PrivateEnabled: privateEnabled,
+	}
+	for _, recipient := range recipients {
+		recipient.enqueue(update)
+	}
+	return nil
+}
+
 func (s *Server) SetChatUserBlacklisted(ip string, blacklisted bool) error {
 	ip = normalizeChatIP(ip)
 	if ip == "" {
@@ -310,7 +433,7 @@ func (s *Server) serveChatAttachment(w http.ResponseWriter, r *http.Request, cli
 		return
 	}
 	defer attachment.Reader.Close()
-	if !chatConversationVisibleToIP(attachment.ConversationID, clientIP) {
+	if !s.chat.conversationVisibleToIP(attachment.ConversationID, clientIP) {
 		http.Error(w, "无权访问此聊天附件", http.StatusForbidden)
 		return
 	}
@@ -335,6 +458,102 @@ func (s *Server) serveChatAttachment(w http.ResponseWriter, r *http.Request, cli
 	_, _ = io.Copy(w, attachment.Reader)
 }
 
+func (s *Server) serveChatArchive(w http.ResponseWriter, r *http.Request, clientIP string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	persistence := s.Persistence()
+	if persistence == nil {
+		http.Error(w, "聊天归档尚未初始化", http.StatusServiceUnavailable)
+		return
+	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+	kind := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
+	if kind != "" && kind != ChatMessageKindImage && kind != ChatMessageKindFile {
+		http.Error(w, "归档类型无效", http.StatusBadRequest)
+		return
+	}
+	conversationID := ""
+	groupMembers := make(map[string][]string)
+	if r.URL.Query().Get("scope") == "all" {
+		s.chat.mu.RLock()
+		for id, group := range s.chat.userGroups {
+			if containsIP(group.Members, clientIP) {
+				groupMembers[id] = append([]string(nil), group.Members...)
+			}
+		}
+		s.chat.mu.RUnlock()
+	} else {
+		groupID := strings.TrimSpace(r.URL.Query().Get("groupId"))
+		if groupID != "" {
+			s.chat.mu.RLock()
+			group := s.chat.userGroups[groupID]
+			if group != nil && containsIP(group.Members, clientIP) {
+				conversationID = chatUserGroupPrefix + groupID
+				groupMembers[groupID] = append([]string(nil), group.Members...)
+			}
+			s.chat.mu.RUnlock()
+			if conversationID == "" {
+				http.Error(w, "群聊不存在或你不在群内", http.StatusForbidden)
+				return
+			}
+		}
+		target := normalizeChatIP(r.URL.Query().Get("targetId"))
+		if conversationID != "" {
+			// A group archive route has already been resolved above.
+		} else if target == "" {
+			conversationID = ChatGroupConversationID
+		} else {
+			conversationID = directConversationID(clientIP, target)
+			if conversationID == "" {
+				http.Error(w, "会话目标无效", http.StatusBadRequest)
+				return
+			}
+		}
+	}
+	parseDate := func(raw string, endOfDay bool) time.Time {
+		value, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(raw), time.Local)
+		if err != nil {
+			return time.Time{}
+		}
+		if endOfDay {
+			value = value.Add(24*time.Hour - time.Nanosecond)
+		}
+		return value.UTC()
+	}
+	result, err := persistence.ListChatAttachments(ChatArchiveQuery{
+		ViewerIP: clientIP, ConversationID: conversationID,
+		GroupMembers: groupMembers,
+		Query:        r.URL.Query().Get("q"), Kind: kind,
+		From: parseDate(r.URL.Query().Get("from"), false),
+		To:   parseDate(r.URL.Query().Get("to"), true),
+		Page: page, PageSize: pageSize,
+	})
+	if err != nil {
+		http.Error(w, "读取聊天归档失败", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+func (h *chatHub) conversationVisibleToIP(conversationID, ip string) bool {
+	if chatConversationVisibleToIP(conversationID, ip) {
+		return true
+	}
+	if !strings.HasPrefix(conversationID, chatUserGroupPrefix) {
+		return false
+	}
+	h.mu.RLock()
+	group := h.userGroups[strings.TrimPrefix(conversationID, chatUserGroupPrefix)]
+	visible := group != nil && containsIP(group.Members, ip)
+	h.mu.RUnlock()
+	return visible
+}
+
 func chatConversationVisibleToIP(conversationID, ip string) bool {
 	ip = normalizeChatIP(ip)
 	switch {
@@ -347,9 +566,19 @@ func chatConversationVisibleToIP(conversationID, ip string) bool {
 	case strings.HasPrefix(conversationID, directConversationPrefix):
 		first, second, ok := parseDirectConversationID(conversationID)
 		return ok && (first == ip || second == ip)
+	case strings.HasPrefix(conversationID, chatUserGroupPrefix):
+		// Membership is checked by chatHub.conversationVisibleToIP where the
+		// live group registry is available.
+		return false
 	default:
 		return false
 	}
+}
+
+// ChatConversationVisibleToIP exposes the attachment authorization rule to
+// the database archive index without exposing any filesystem paths.
+func ChatConversationVisibleToIP(conversationID, ip string) bool {
+	return chatConversationVisibleToIP(conversationID, ip)
 }
 
 func (s *Server) ClearChatHistory() error {
@@ -370,6 +599,62 @@ func (s *Server) ClearChatHistory() error {
 	return nil
 }
 
+// DeleteChatMessage removes one persisted message and its attachment. It is a
+// desktop-management action; browser participants cannot call it.
+func (s *Server) DeleteChatMessage(messageID string) error {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return errors.New("消息 ID 无效")
+	}
+	s.chat.mu.Lock()
+	removed := false
+	remove := func(conversation *chatConversationState) {
+		if conversation == nil {
+			return
+		}
+		for index := range conversation.messages {
+			if conversation.messages[index].ID != messageID {
+				continue
+			}
+			conversation.historyBytes -= chatMessageHistoryBytes(conversation.messages[index])
+			conversation.messages[index] = ChatMessage{}
+			conversation.messages = append(conversation.messages[:index], conversation.messages[index+1:]...)
+			removed = true
+			return
+		}
+	}
+	remove(s.chat.group)
+	for _, group := range s.chat.userGroups {
+		for index := range group.messages {
+			if group.messages[index].ID != messageID {
+				continue
+			}
+			group.historyBytes -= chatMessageHistoryBytes(group.messages[index])
+			group.messages = append(group.messages[:index], group.messages[index+1:]...)
+			removed = true
+			break
+		}
+	}
+	for _, conversation := range s.chat.conversations {
+		remove(conversation)
+	}
+	for _, conversation := range s.chat.direct {
+		remove(conversation)
+	}
+	persistence := s.chat.persistence
+	if removed {
+		s.chat.scheduleNotifyLocked()
+	}
+	s.chat.mu.Unlock()
+	if persistence == nil {
+		if !removed {
+			return os.ErrNotExist
+		}
+		return nil
+	}
+	return persistence.DeleteChatMessage(messageID)
+}
+
 func (s *Server) ClearChatUsers() error {
 	s.chat.mu.Lock()
 	persistence := s.chat.persistence
@@ -379,6 +664,7 @@ func (s *Server) ClearChatUsers() error {
 		online[peer.ip] = peer.client
 	}
 	s.chat.users = make(map[string]*ChatUser)
+	s.chat.remarks = make(map[string]map[string]string)
 	for ip, conversation := range s.chat.conversations {
 		conversation.name = ip
 		conversation.client = ChatClientInfo{IP: ip}
@@ -396,6 +682,9 @@ func (s *Server) ClearChatUsers() error {
 	s.chat.mu.Unlock()
 	if persistence != nil {
 		if err := persistence.ClearChatUsers(); err != nil {
+			return err
+		}
+		if err := persistence.ClearChatRemarks(); err != nil {
 			return err
 		}
 		for _, user := range s.ChatUsers() {
@@ -454,9 +743,11 @@ func (h *chatHub) publicUsersLocked(currentIP string) []ChatPublicUser {
 		if user != nil {
 			alias = user.Name
 		}
+		remark := h.remarks[currentIP][ip]
 		items = append(items, ChatPublicUser{
-			IP: ip, Name: name, Alias: alias, SearchKey: chatUserSearchKey(ip, alias),
-			Online: true, Me: ip == currentIP,
+			IP: ip, Name: name, Alias: alias, Remark: remark,
+			SearchKey: chatUserSearchKey(ip, strings.TrimSpace(alias+" "+remark)),
+			Online:    true, Me: ip == currentIP,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -466,6 +757,18 @@ func (h *chatHub) publicUsersLocked(currentIP string) []ChatPublicUser {
 		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
 	})
 	return items
+}
+
+func (h *chatHub) remarksForPeerLocked(ip string) map[string]string {
+	source := h.remarks[normalizeChatIP(ip)]
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(source))
+	for target, name := range source {
+		result[target] = name
+	}
+	return result
 }
 
 func chatUserSearchKey(ip, alias string) string {
@@ -497,10 +800,11 @@ func (h *chatHub) broadcastUserListLocked() []*chatPeer {
 	var slow []*chatPeer
 	for _, peer := range h.peers {
 		message := chatWireMessage{
-			Type:            "users",
-			Users:           h.publicUsersLocked(peer.ip),
-			UserListEnabled: h.userListEnabled,
-			PrivateEnabled:  h.privateEnabled,
+			Type:               "users",
+			Users:              h.publicUsersLocked(peer.ip),
+			UserListEnabled:    h.userListEnabled,
+			PrivateEnabled:     h.privateEnabled,
+			GroupCreateEnabled: h.groupCreate,
 		}
 		if !peer.enqueue(message) {
 			slow = append(slow, peer)

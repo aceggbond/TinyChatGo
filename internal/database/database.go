@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,6 +23,7 @@ import (
 var (
 	bucketApp         = []byte("app")
 	bucketUsers       = []byte("users")
+	bucketRemarks     = []byte("remarks")
 	bucketMessages    = []byte("messages")
 	bucketAttachments = []byte("attachments")
 	bucketAccess      = []byte("access")
@@ -29,6 +31,7 @@ var (
 	keySettings = []byte("settings")
 	keyShares   = []byte("shares")
 	keyHTTPS    = []byte("https-certificate")
+	keyGroups   = []byte("chat-groups")
 )
 
 const loadedMessagesPerConversation = 100
@@ -70,7 +73,7 @@ func Open(path string) (*DB, error) {
 		attachmentRoot: filepath.Join(filepath.Dir(absolute), "chat_files"),
 	}
 	if err = raw.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bucketApp, bucketUsers, bucketMessages, bucketAttachments, bucketAccess} {
+		for _, name := range [][]byte{bucketApp, bucketUsers, bucketRemarks, bucketMessages, bucketAttachments, bucketAccess} {
 			if _, createErr := tx.CreateBucketIfNotExists(name); createErr != nil {
 				return createErr
 			}
@@ -127,6 +130,48 @@ func (d *DB) LoadShares(value any) (bool, error) {
 
 func (d *DB) SaveShares(value any) error {
 	return d.saveAppJSON(keyShares, value)
+}
+
+func (d *DB) LoadChatGroups() ([]server.ChatGroup, error) {
+	var groups []server.ChatGroup
+	found, err := d.loadAppJSON(keyGroups, &groups)
+	if err != nil || !found {
+		return []server.ChatGroup{}, err
+	}
+	return groups, nil
+}
+
+func (d *DB) SaveChatGroup(group server.ChatGroup) error {
+	groups, err := d.LoadChatGroups()
+	if err != nil {
+		return err
+	}
+	replaced := false
+	for index := range groups {
+		if groups[index].ID == group.ID {
+			groups[index] = group
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		groups = append(groups, group)
+	}
+	return d.saveAppJSON(keyGroups, groups)
+}
+
+func (d *DB) DeleteChatGroup(id string) error {
+	groups, err := d.LoadChatGroups()
+	if err != nil {
+		return err
+	}
+	filtered := groups[:0]
+	for _, group := range groups {
+		if group.ID != id {
+			filtered = append(filtered, group)
+		}
+	}
+	return d.saveAppJSON(keyGroups, filtered)
 }
 
 func (d *DB) loadAppJSON(key []byte, value any) (bool, error) {
@@ -204,6 +249,45 @@ func (d *DB) SaveChatUser(user server.ChatUser) error {
 	return d.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketUsers).Put([]byte(user.IP), raw)
 	})
+}
+
+func (d *DB) LoadChatRemarks() ([]server.ChatRemark, error) {
+	remarks := make([]server.ChatRemark, 0)
+	err := d.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketRemarks).ForEach(func(_, value []byte) error {
+			var remark server.ChatRemark
+			if err := json.Unmarshal(value, &remark); err != nil {
+				return err
+			}
+			remarks = append(remarks, remark)
+			return nil
+		})
+	})
+	return remarks, err
+}
+
+func (d *DB) SaveChatRemark(remark server.ChatRemark) error {
+	if strings.TrimSpace(remark.OwnerIP) == "" || strings.TrimSpace(remark.TargetIP) == "" {
+		return errors.New("chat remark identity is missing")
+	}
+	remark.Updated = time.Now().UTC()
+	raw, err := json.Marshal(remark)
+	if err != nil {
+		return err
+	}
+	return d.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketRemarks).Put(remarkKey(remark.OwnerIP, remark.TargetIP), raw)
+	})
+}
+
+func (d *DB) DeleteChatRemark(ownerIP, targetIP string) error {
+	return d.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketRemarks).Delete(remarkKey(ownerIP, targetIP))
+	})
+}
+
+func (d *DB) ClearChatRemarks() error {
+	return d.recreateBucket(bucketRemarks)
 }
 
 func (d *DB) DeleteChatUser(ip string) error {
@@ -327,6 +411,62 @@ func (d *DB) DeleteChatMessage(messageID string) error {
 	return err
 }
 
+func (d *DB) RecallChatMessage(messageID string, recalledAt time.Time) (server.StoredChatMessage, error) {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return server.StoredChatMessage{}, os.ErrNotExist
+	}
+	if recalledAt.IsZero() {
+		recalledAt = time.Now().UTC()
+	}
+	var recalled server.StoredChatMessage
+	var attachmentPath string
+	err := d.db.Update(func(tx *bolt.Tx) error {
+		messages := tx.Bucket(bucketMessages)
+		var foundKey []byte
+		cursor := messages.Cursor()
+		for key, value := cursor.First(); key != nil; key, value = cursor.Next() {
+			var item server.StoredChatMessage
+			if json.Unmarshal(value, &item) != nil || item.Message.ID != messageID {
+				continue
+			}
+			foundKey = append([]byte(nil), key...)
+			recalled = item
+			break
+		}
+		if len(foundKey) == 0 {
+			return os.ErrNotExist
+		}
+		attachmentPath = recalled.Message.AttachmentPath
+		recalled.Message.Recalled = true
+		recalled.Message.RecalledAt = recalledAt
+		recalled.Message.Text = ""
+		recalled.Message.Mime = ""
+		recalled.Message.Data = nil
+		recalled.Message.FileName = ""
+		recalled.Message.FileSize = 0
+		recalled.Message.FileURL = ""
+		recalled.Message.AttachmentPath = ""
+		raw, err := json.Marshal(recalled)
+		if err != nil {
+			return err
+		}
+		if err = messages.Put(foundKey, raw); err != nil {
+			return err
+		}
+		return tx.Bucket(bucketAttachments).Delete([]byte(messageID))
+	})
+	if err != nil {
+		return server.StoredChatMessage{}, err
+	}
+	if attachmentPath != "" {
+		if absolute, resolveErr := d.resolveAttachment(attachmentPath); resolveErr == nil {
+			_ = os.Remove(absolute)
+		}
+	}
+	return recalled, nil
+}
+
 func (d *DB) DeleteChatConversation(conversationID string) error {
 	paths := make([]string, 0)
 	err := d.db.Update(func(tx *bolt.Tx) error {
@@ -421,6 +561,124 @@ func (d *DB) OpenChatAttachment(messageID string) (server.ChatAttachment, error)
 		Size:           info.Size(),
 		ModTime:        info.ModTime(),
 		Reader:         file,
+	}, nil
+}
+
+func (d *DB) ListChatAttachments(query server.ChatArchiveQuery) (server.ChatArchivePage, error) {
+	page := query.Page
+	if page < 1 {
+		page = 1
+	}
+	pageSize := query.PageSize
+	if pageSize < 1 {
+		pageSize = 24
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	needle := strings.ToLower(strings.TrimSpace(query.Query))
+	kind := strings.ToLower(strings.TrimSpace(query.Kind))
+	conversationID := strings.TrimSpace(query.ConversationID)
+	items := make([]server.ChatArchiveItem, 0)
+	err := d.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketAttachments).ForEach(func(_, value []byte) error {
+			var stored server.StoredChatMessage
+			if err := json.Unmarshal(value, &stored); err != nil {
+				return err
+			}
+			message := stored.Message
+			if message.Recalled || message.AttachmentPath == "" {
+				return nil
+			}
+			if query.ViewerIP != "" && !server.ChatConversationVisibleToIP(stored.ConversationID, query.ViewerIP) {
+				if strings.HasPrefix(stored.ConversationID, "group:") {
+					groupID := strings.TrimPrefix(stored.ConversationID, "group:")
+					allowed := false
+					for _, member := range query.GroupMembers[groupID] {
+						if member == query.ViewerIP {
+							allowed = true
+							break
+						}
+					}
+					if !allowed {
+						return nil
+					}
+				} else {
+					return nil
+				}
+			}
+			if conversationID != "" && stored.ConversationID != conversationID {
+				return nil
+			}
+			if kind != "" && strings.ToLower(message.Kind) != kind {
+				return nil
+			}
+			if !query.From.IsZero() && message.SentAt.Before(query.From) {
+				return nil
+			}
+			if !query.To.IsZero() && message.SentAt.After(query.To) {
+				return nil
+			}
+			if needle != "" {
+				haystack := strings.ToLower(strings.Join([]string{
+					message.FileName, message.Mime, message.ClientID, message.Name,
+				}, " "))
+				if !strings.Contains(haystack, needle) {
+					return nil
+				}
+			}
+			name := strings.TrimSpace(message.FileName)
+			if name == "" {
+				name = "聊天附件"
+			}
+			items = append(items, server.ChatArchiveItem{
+				MessageID:      message.ID,
+				ConversationID: stored.ConversationID,
+				Kind:           message.Kind,
+				Name:           name,
+				MIME:           message.Mime,
+				Size:           message.FileSize,
+				SentAt:         message.SentAt,
+				SenderIP:       message.ClientID,
+				SenderName:     message.Name,
+				TargetID:       message.TargetID,
+				Private:        message.Private,
+				FileURL:        "/__hfs/chat/file/" + url.PathEscape(message.ID) + "/" + url.PathEscape(name),
+			})
+			return nil
+		})
+	})
+	if err != nil {
+		return server.ChatArchivePage{}, err
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].SentAt.Equal(items[j].SentAt) {
+			return items[i].MessageID > items[j].MessageID
+		}
+		return items[i].SentAt.After(items[j].SentAt)
+	})
+	total := len(items)
+	pages := 0
+	if total > 0 {
+		pages = (total + pageSize - 1) / pageSize
+		if page > pages {
+			page = pages
+		}
+	}
+	start := (page - 1) * pageSize
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return server.ChatArchivePage{
+		Items: append([]server.ChatArchiveItem(nil), items[start:end]...),
+		Page:  page, PageSize: pageSize, Total: total, Pages: pages,
 	}, nil
 }
 
@@ -617,6 +875,10 @@ func messageKey(conversationID string, message server.ChatMessage) []byte {
 		nanos = 0
 	}
 	return []byte(conversationID + "\x00" + fmt.Sprintf("%020d", nanos) + "\x00" + message.ID)
+}
+
+func remarkKey(ownerIP, targetIP string) []byte {
+	return []byte(strings.TrimSpace(ownerIP) + "\x00" + strings.TrimSpace(targetIP))
 }
 
 // MigrationDone records one-time imports without exposing another sidecar.
