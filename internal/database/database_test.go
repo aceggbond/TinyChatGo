@@ -154,3 +154,34 @@ func TestDatabasePersistsApplicationAndChatData(t *testing.T) {
 		t.Fatalf("chat_files after clear = %#v, %v", entries, readDirErr)
 	}
 }
+
+func TestDatabasePersistsChatReadReceipt(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "lanchatgo.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	message := server.ChatMessage{
+		ID:       "read-message",
+		Kind:     server.ChatMessageKindText,
+		Sender:   "user",
+		ClientID: "192.0.2.20",
+		Text:     "请标记已读",
+		Receipt:  true,
+		SentAt:   time.Now().UTC(),
+	}
+	if _, err = store.SaveChatMessage(server.ChatAdminConversationID+":192.0.2.20", message); err != nil {
+		t.Fatal(err)
+	}
+	readAt := time.Now().UTC()
+	if err = store.MarkChatMessagesRead([]string{message.ID}, readAt); err != nil {
+		t.Fatal(err)
+	}
+	_, messages, err := store.LoadChatState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || !messages[0].Message.Read || messages[0].Message.ReadAt.IsZero() {
+		t.Fatalf("persisted read receipt = %#v", messages)
+	}
+}

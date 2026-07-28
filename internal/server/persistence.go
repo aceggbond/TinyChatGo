@@ -159,3 +159,9 @@ type ChatGroupPersistence interface {
 	SaveChatGroup(ChatGroup) error
 	DeleteChatGroup(string) error
 }
+
+// ChatReadPersistence is an optional extension for durable read receipts.
+// Keeping it separate avoids forcing in-memory embedders to implement it.
+type ChatReadPersistence interface {
+	MarkChatMessagesRead([]string, time.Time) error
+}

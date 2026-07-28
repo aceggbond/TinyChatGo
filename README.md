@@ -2,7 +2,7 @@
 
 LanChatGo（原 **hfs-go**）是一个轻量、安全的局域网聊天与文件分享系统。运行 Windows 客户端后，局域网用户通过浏览器访问服务地址即可聊天、发送文件和管理个人资料；桌面端负责服务控制、用户管理和历史归档。
 
-[下载 LanChatGo v1.5](https://github.com/aceggbond/LanChatGo/releases/tag/v1.5) · [Releases](https://github.com/aceggbond/LanChatGo/releases) · [项目地址](https://github.com/aceggbond/LanChatGo)
+[下载 LanChatGo v1.6](https://github.com/aceggbond/LanChatGo/releases/tag/v1.6) · [Releases](https://github.com/aceggbond/LanChatGo/releases) · [项目地址](https://github.com/aceggbond/LanChatGo)
 
 ## 主要功能
 
@@ -11,7 +11,10 @@ LanChatGo（原 **hfs-go**）是一个轻量、安全的局域网聊天与文件
 - 会话可置顶或取消置顶；系统群固定第一，置顶会话随后显示，其他会话按最新消息自动前移。
 - IP 作为用户唯一标识，可设置自己的名称，管理员可修改备注、移除用户或加入黑名单。
 - 会话中心与在线用户分组，未读消息数量、闪烁提示、浏览器通知和声音提醒。
-- 支持长文本、常用表情、粘贴或拖拽发送图片；图片可放大预览并切换上一张/下一张。
+- 私信支持未读/已读状态；只有接收方实际打开对应私信且页面可见时才会标记已读，系统群和群聊不使用已读回执。
+- 每个聊天窗口可单独开启或关闭消息提醒，全局浏览器提醒也可以随时关闭。
+- 支持长文本、常用表情以及粘贴或拖拽图片和文件；附件会先进入待发送区，确认发送后才会上传。
+- 图片可放大预览，并支持切换上一张/下一张。
 - 用户发送的文件和图片自动归档，可按名称、发送人、IP、日期和类型搜索，并分页浏览。
 - 图片最大 100 MiB，普通文件最大 1 GiB；上传显示实时进度。
 - 消息发送后 2 分钟内可以撤回，聊天记录按批次加载，减少长会话卡顿。

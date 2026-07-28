@@ -1,5 +1,6 @@
 # Build outputs
 *.exe
+*.exe~
 *.test
 /LanChatGo*.zip
 

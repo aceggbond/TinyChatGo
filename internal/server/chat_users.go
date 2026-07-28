@@ -133,6 +133,15 @@ func (s *Server) SetPersistence(persistence Persistence) error {
 	}
 	for _, stored := range messages {
 		message := stored.Message
+		if strings.HasPrefix(stored.ConversationID, directConversationPrefix) {
+			if message.Receipt && !message.ReadAt.IsZero() {
+				message.Read = true
+			}
+		} else {
+			message.Receipt = false
+			message.Read = false
+			message.ReadAt = time.Time{}
+		}
 		if message.AttachmentPath != "" {
 			message.FileURL = chatAttachmentURL(message)
 			message.Data = nil

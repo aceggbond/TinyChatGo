@@ -95,40 +95,36 @@ func TestChatOperationLogsUseIP(t *testing.T) {
 
 func TestChatWidgetRendersAndSelectsWSSForHTTPS(t *testing.T) {
 	s := New(io.Discard)
+	s.SetChatEnabled(true)
 	request := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
 	recorder := httptest.NewRecorder()
 	s.ServeHTTP(recorder, request)
 	body := recorder.Body.String()
-	if !strings.Contains(body, `class="portal-grid"`) ||
-		!strings.Contains(body, `grid-template-columns:minmax(0,1fr) minmax(0,1fr)`) ||
-		!strings.Contains(body, `class="workspace-card file-panel"`) ||
-		!strings.Contains(body, `class="workspace-card chat-panel open disabled"`) {
-		t.Fatal("front-end dashboard did not render equal file/chat panels")
-	}
 	if !strings.Contains(body, `location.protocol==='https:'?'wss://':'ws://'`) {
 		t.Fatal("chat client does not select wss for an HTTPS page")
 	}
 	for _, marker := range []string{
 		`id="chat-notify"`,
-		`id="chat-notify-row"`,
-		`notifyRow.hidden=subscribed`,
-		`局域网 HTTP 将直接交给浏览器尝试`,
-		`notifyButton.addEventListener('click',requestNotificationSubscription)`,
-		`Notification.requestPermission(finish)`,
-		`history.forEach(function(item){addMessage(item,false)})`,
-		`if(notify&&!mine)notifyIncoming(message,label)`,
-		`notice.onclick=function(){window.focus();setOpen(true);notice.close()}`,
-		`notice.onerror=function(){playAlert()}`,
-		`placeholder="输入消息，Enter 发送；可粘贴或拖入图片"`,
-		`panel.addEventListener('drop'`,
-		`sendImageFiles(event.dataTransfer.files)`,
+		`id="conversation-notify-button"`,
+		`id="attachment-drafts"`,
+		`queueFiles(files)`,
+		`sendDrafts()`,
+		`socket.send(JSON.stringify({type:'read'`,
+		`type:'read',targetId:key`,
+		`function applyRead(frame)`,
+		`if(frame.clientId!==currentIP)return`,
+		`isRead=m.read===true`,
+		`type:'view',targetId:target`,
+		`function markConversationRead(key)`,
+		`function scrollMessagesBottom()`,
+		`function pageVisible()`,
+		`.message.mine.pending-read .message-meta{color:var(--red)`,
+		`.message.mine.pending-read .bubble{background:var(--blue)`,
+		`释放后加入待发送列表`,
 	} {
 		if !strings.Contains(body, marker) {
-			t.Fatalf("chat notification widget is missing %q", marker)
+			t.Fatalf("chat widget is missing %q", marker)
 		}
-	}
-	if strings.Contains(body, `launcher.addEventListener('click',requestNotificationSubscription)`) {
-		t.Fatal("opening chat unexpectedly requests notification permission")
 	}
 	if strings.Contains(body, `id="chat-attach"`) || strings.Contains(body, `id="chat-file"`) || strings.Contains(body, `>选择图片</button>`) {
 		t.Fatal("chat widget still renders a separate image upload button")
@@ -137,15 +133,6 @@ func TestChatWidgetRendersAndSelectsWSSForHTTPS(t *testing.T) {
 		t.Fatal("chat widget still exposes a visitor-name identity")
 	}
 
-	s.SetChatEnabled(true)
-	recorder = httptest.NewRecorder()
-	s.ServeHTTP(recorder, request)
-	body = recorder.Body.String()
-	if !strings.Contains(body, `class="workspace-card chat-panel open "`) ||
-		!strings.Contains(body, `data-enabled="1"`) ||
-		strings.Contains(body, `class="workspace-card chat-panel open disabled"`) {
-		t.Fatal("enabled inline chat panel rendered disabled")
-	}
 }
 
 func TestBrandLogoEndpoint(t *testing.T) {

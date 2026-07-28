@@ -467,6 +467,66 @@ func (d *DB) RecallChatMessage(messageID string, recalledAt time.Time) (server.S
 	return recalled, nil
 }
 
+func (d *DB) MarkChatMessagesRead(messageIDs []string, readAt time.Time) error {
+	ids := make(map[string]struct{}, len(messageIDs))
+	for _, rawID := range messageIDs {
+		if id := strings.TrimSpace(rawID); id != "" {
+			ids[id] = struct{}{}
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if readAt.IsZero() {
+		readAt = time.Now().UTC()
+	}
+	type update struct {
+		key        []byte
+		messageID  string
+		attachment bool
+		raw        []byte
+	}
+	return d.db.Update(func(tx *bolt.Tx) error {
+		messages := tx.Bucket(bucketMessages)
+		updates := make([]update, 0, len(ids))
+		cursor := messages.Cursor()
+		for key, value := cursor.First(); key != nil; key, value = cursor.Next() {
+			var item server.StoredChatMessage
+			if json.Unmarshal(value, &item) != nil {
+				continue
+			}
+			if _, wanted := ids[item.Message.ID]; !wanted ||
+				!item.Message.Receipt || item.Message.Read {
+				continue
+			}
+			item.Message.Read = true
+			item.Message.ReadAt = readAt
+			raw, err := json.Marshal(item)
+			if err != nil {
+				return err
+			}
+			updates = append(updates, update{
+				key:        append([]byte(nil), key...),
+				messageID:  item.Message.ID,
+				attachment: item.Message.AttachmentPath != "",
+				raw:        raw,
+			})
+		}
+		attachments := tx.Bucket(bucketAttachments)
+		for _, item := range updates {
+			if err := messages.Put(item.key, item.raw); err != nil {
+				return err
+			}
+			if item.attachment {
+				if err := attachments.Put([]byte(item.messageID), item.raw); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
 func (d *DB) DeleteChatConversation(conversationID string) error {
 	paths := make([]string, 0)
 	err := d.db.Update(func(tx *bolt.Tx) error {

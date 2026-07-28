@@ -91,6 +91,9 @@ type ChatMessage struct {
 	GroupID        string    `json:"groupId,omitempty"`
 	Private        bool      `json:"private,omitempty"`
 	SentAt         time.Time `json:"sentAt"`
+	Receipt        bool      `json:"receipt,omitempty"`
+	Read           bool      `json:"read,omitempty"`
+	ReadAt         time.Time `json:"readAt,omitempty"`
 	Recalled       bool      `json:"recalled,omitempty"`
 	RecalledAt     time.Time `json:"recalledAt,omitempty"`
 }
@@ -155,14 +158,15 @@ type chatUserGroupState struct {
 }
 
 type chatPeer struct {
-	id        string
-	ip        string
-	client    ChatClientInfo
-	conn      *websocket.Conn
-	send      chan chatWireMessage
-	closeReq  chan chatCloseRequest
-	closed    chan struct{}
-	closeOnce sync.Once
+	id         string
+	ip         string
+	viewTarget string
+	client     ChatClientInfo
+	conn       *websocket.Conn
+	send       chan chatWireMessage
+	closeReq   chan chatCloseRequest
+	closed     chan struct{}
+	closeOnce  sync.Once
 }
 
 type chatCloseRequest struct {
@@ -186,6 +190,8 @@ type chatWireMessage struct {
 	FileURL            string                   `json:"fileUrl,omitempty"`
 	TargetID           string                   `json:"targetId,omitempty"`
 	Private            bool                     `json:"private,omitempty"`
+	Receipt            bool                     `json:"receipt,omitempty"`
+	Read               bool                     `json:"read,omitempty"`
 	Recalled           bool                     `json:"recalled,omitempty"`
 	RecalledAt         time.Time                `json:"recalledAt,omitempty"`
 	Users              []ChatPublicUser         `json:"users,omitempty"`
@@ -199,6 +205,8 @@ type chatWireMessage struct {
 	PrivateEnabled     bool                     `json:"privateEnabled,omitempty"`
 	DirectHistory      map[string][]ChatMessage `json:"directHistory,omitempty"`
 	SentAt             time.Time                `json:"sentAt,omitempty"`
+	IDs                []string                 `json:"ids,omitempty"`
+	ReadAt             time.Time                `json:"readAt,omitempty"`
 	History            []ChatMessage            `json:"history,omitempty"`
 }
 
@@ -214,6 +222,7 @@ type chatClientMessage struct {
 	GroupID  string   `json:"groupId,omitempty"`
 	Members  []string `json:"members,omitempty"`
 	ID       string   `json:"id,omitempty"`
+	IDs      []string `json:"ids,omitempty"`
 }
 
 var chatUpgrader = websocket.Upgrader{
@@ -1683,6 +1692,12 @@ func (p *chatPeer) readPump(h *chatHub) {
 			if err := h.recallPeerMessage(p, incoming.ID); err != nil {
 				p.enqueue(chatWireMessage{Type: "error", Text: err.Error()})
 			}
+		case "view":
+			h.updatePeerView(p, incoming.TargetID)
+		case "read":
+			if err := h.markMessagesRead(p, incoming.TargetID, incoming.IDs); err != nil {
+				p.enqueue(chatWireMessage{Type: "error", Text: err.Error()})
+			}
 		default:
 			p.enqueue(chatWireMessage{Type: "error", Text: "未知的聊天操作"})
 		}
@@ -2064,6 +2079,113 @@ func (h *chatHub) receiveDirectMessage(peer *chatPeer, targetID string, message 
 	return nil
 }
 
+func (h *chatHub) markMessagesRead(peer *chatPeer, rawTargetID string, rawIDs []string) error {
+	if len(rawIDs) == 0 {
+		return nil
+	}
+	targetID := normalizeChatIP(rawTargetID)
+	if targetID == "" || targetID == peer.ip {
+		return nil
+	}
+	capacity := len(rawIDs)
+	if capacity > 100 {
+		capacity = 100
+	}
+	requested := make(map[string]struct{}, capacity)
+	for _, rawID := range rawIDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" || len(id) > 128 {
+			continue
+		}
+		requested[id] = struct{}{}
+		if len(requested) == 100 {
+			break
+		}
+	}
+	if len(requested) == 0 {
+		return nil
+	}
+
+	h.mu.Lock()
+	if !h.enabled || h.peers[peer.id] != peer {
+		h.mu.Unlock()
+		return errors.New("聊天连接已关闭")
+	}
+	if peer.viewTarget != targetID {
+		h.mu.Unlock()
+		return nil
+	}
+	matches := make(map[string][]*ChatMessage)
+	conversation := h.direct[directConversationID(peer.ip, targetID)]
+	if conversation == nil {
+		h.mu.Unlock()
+		return nil
+	}
+	for index := range conversation.messages {
+		message := &conversation.messages[index]
+		if _, wanted := requested[message.ID]; !wanted ||
+			!message.Receipt || message.Read ||
+			normalizeChatIP(message.ClientID) != targetID ||
+			normalizeChatIP(message.TargetID) != peer.ip {
+			continue
+		}
+		matches[message.ID] = append(matches[message.ID], message)
+	}
+	if len(matches) == 0 {
+		h.mu.Unlock()
+		return nil
+	}
+	ids := make([]string, 0, len(matches))
+	for id := range matches {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	readAt := time.Now().UTC()
+	if persistence, ok := h.persistence.(ChatReadPersistence); ok {
+		if err := persistence.MarkChatMessagesRead(ids, readAt); err != nil {
+			h.mu.Unlock()
+			return fmt.Errorf("保存已读状态失败：%w", err)
+		}
+	}
+	for _, id := range ids {
+		for _, message := range matches[id] {
+			message.Read = true
+			message.ReadAt = readAt
+		}
+	}
+	frame := chatWireMessage{
+		Type:     "read",
+		ClientID: targetID,
+		TargetID: peer.ip,
+		IDs:      ids,
+		ReadAt:   readAt,
+	}
+	var slow []*chatPeer
+	for _, recipient := range h.peers {
+		if recipient.ip != targetID {
+			continue
+		}
+		if !recipient.enqueue(frame) {
+			slow = append(slow, recipient)
+		}
+	}
+	h.mu.Unlock()
+	shutdownSlowChatPeers(slow)
+	return nil
+}
+
+func (h *chatHub) updatePeerView(peer *chatPeer, rawTargetID string) {
+	targetID := normalizeChatIP(rawTargetID)
+	if targetID == peer.ip {
+		targetID = ""
+	}
+	h.mu.Lock()
+	if h.peers[peer.id] == peer {
+		peer.viewTarget = targetID
+	}
+	h.mu.Unlock()
+}
+
 func (h *chatHub) recallPeerMessage(peer *chatPeer, messageID string) error {
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {
@@ -2275,6 +2397,7 @@ func (h *chatHub) updatePeerName(peer *chatPeer, name string) {
 }
 
 func (h *chatHub) persistMessageLocked(conversationID string, message ChatMessage) (ChatMessage, error) {
+	message.Receipt = message.Sender == "user" && strings.HasPrefix(conversationID, directConversationPrefix)
 	if h.persistence == nil {
 		return message, nil
 	}
@@ -2293,6 +2416,7 @@ func (h *chatHub) persistAttachment(conversationID string, message ChatMessage, 
 	if h.persistence == nil {
 		return message, errors.New("附件持久化服务不可用")
 	}
+	message.Receipt = message.Sender == "user" && strings.HasPrefix(conversationID, directConversationPrefix)
 	stored, err := h.persistence.SaveChatAttachment(conversationID, message, reader, maxBytes)
 	if err != nil {
 		return message, err
@@ -2741,6 +2865,9 @@ func wireFromMessage(message ChatMessage) chatWireMessage {
 		TargetID:   message.TargetID,
 		GroupID:    message.GroupID,
 		Private:    message.Private,
+		Receipt:    message.Receipt,
+		Read:       message.Read,
+		ReadAt:     message.ReadAt,
 		Recalled:   message.Recalled,
 		RecalledAt: message.RecalledAt,
 		SentAt:     message.SentAt,
