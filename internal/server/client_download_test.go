@@ -105,3 +105,32 @@ func TestClientDownloadDetectsMacOSAndUsesArm64Release(t *testing.T) {
 		t.Fatalf("macOS redirect = %q, want %q", got, want)
 	}
 }
+
+func TestPortalComposerOffersUnifiedImageFileAndEmojiTools(t *testing.T) {
+	s := New(io.Discard)
+	s.SetChatEnabled(true)
+	s.SetUserListEnabled(true)
+	recorder := httptest.NewRecorder()
+	s.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://example.test/", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("portal status = %d", recorder.Code)
+	}
+	body := recorder.Body.String()
+	for _, marker := range []string{
+		`class="compose-toolbar"`,
+		`id="emoji-button" class="compose-tool"`,
+		`id="chat-image-button" class="compose-tool"`,
+		`id="chat-file-button" class="compose-tool"`,
+		`id="chat-image-input" class="compose-file-input" type="file"`,
+		`id="chat-file-input" class="compose-file-input" type="file"`,
+		`queueFiles(imageInput.files)`,
+		`queueFiles(fileInput.files)`,
+		`class="message-sender"`,
+		`.message.other.group-message .message-sender`,
+		`.portal-grid.layout-chat-users{grid-template-columns:96px`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("responsive chat composer missing %q", marker)
+		}
+	}
+}

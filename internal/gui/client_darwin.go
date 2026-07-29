@@ -13,7 +13,7 @@ package gui
 #import <dispatch/dispatch.h>
 #include <stdlib.h>
 
-@interface LCGClientDelegate : NSObject <NSWindowDelegate, WKNavigationDelegate, UNUserNotificationCenterDelegate>
+@interface LCGClientDelegate : NSObject <NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, UNUserNotificationCenterDelegate>
 @property(nonatomic, weak) NSWindow *window;
 @end
 
@@ -49,6 +49,21 @@ static NSStatusItem *lcgStatusItem;
          withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
   completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
 }
+- (void)webView:(WKWebView *)webView
+    runOpenPanelWithParameters:(WKOpenPanelParameters *)parameters
+              initiatedByFrame:(WKFrameInfo *)frame
+             completionHandler:(void (^)(NSArray<NSURL *> *URLs))completionHandler {
+  (void)webView;
+  (void)frame;
+  NSOpenPanel *panel = [NSOpenPanel openPanel];
+  panel.canChooseFiles = YES;
+  panel.canChooseDirectories = NO;
+  panel.allowsMultipleSelection = parameters.allowsMultipleSelection;
+  [panel beginSheetModalForWindow:self.window
+               completionHandler:^(NSModalResponse result) {
+                 completionHandler(result == NSModalResponseOK ? panel.URLs : @[]);
+               }];
+}
 @end
 
 static void LCGConfigureClient(void *windowPtr, const void *logoBytes, int logoLength) {
@@ -69,7 +84,32 @@ static void LCGConfigureClient(void *windowPtr, const void *logoBytes, int logoL
                                     }];
   if ([window.contentView isKindOfClass:[WKWebView class]]) {
     ((WKWebView *)window.contentView).navigationDelegate = lcgClientDelegate;
+    ((WKWebView *)window.contentView).UIDelegate = lcgClientDelegate;
   }
+
+  NSMenu *mainMenu = [NSMenu new];
+  NSMenuItem *appMenuItem = [[NSMenuItem alloc] initWithTitle:@"LanChatGo"
+                                                       action:nil
+                                                keyEquivalent:@""];
+  NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"LanChatGo"];
+  [appMenu addItemWithTitle:@"退出 LanChatGo" action:@selector(terminate:) keyEquivalent:@"q"];
+  appMenuItem.submenu = appMenu;
+  [mainMenu addItem:appMenuItem];
+
+  NSMenuItem *editMenuItem = [[NSMenuItem alloc] initWithTitle:@"编辑"
+                                                        action:nil
+                                                 keyEquivalent:@""];
+  NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"编辑"];
+  [editMenu addItemWithTitle:@"撤销" action:@selector(undo:) keyEquivalent:@"z"];
+  [editMenu addItemWithTitle:@"重做" action:@selector(redo:) keyEquivalent:@"Z"];
+  [editMenu addItem:[NSMenuItem separatorItem]];
+  [editMenu addItemWithTitle:@"剪切" action:@selector(cut:) keyEquivalent:@"x"];
+  [editMenu addItemWithTitle:@"复制" action:@selector(copy:) keyEquivalent:@"c"];
+  [editMenu addItemWithTitle:@"粘贴" action:@selector(paste:) keyEquivalent:@"v"];
+  [editMenu addItemWithTitle:@"全选" action:@selector(selectAll:) keyEquivalent:@"a"];
+  editMenuItem.submenu = editMenu;
+  [mainMenu addItem:editMenuItem];
+  [NSApp setMainMenu:mainMenu];
 
   lcgStatusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
   if (logoBytes != NULL && logoLength > 0) {
@@ -229,7 +269,7 @@ func RunClient(logo []byte) error {
 			return fmt.Errorf("注册 macOS 客户端操作 %s 失败：%w", name, err)
 		}
 	}
-	view.SetHtml(renderDarwinClientHTML(controller.logoURL))
+	view.SetHtml(renderDarwinClientHTML(controller.logoURL, true))
 	if len(logo) > 0 {
 		C.LCGConfigureClient(view.Window(), unsafe.Pointer(&logo[0]), C.int(len(logo)))
 	} else {
@@ -370,8 +410,9 @@ func (c *darwinClientController) updateUnread(total int, _ string) {
 }
 
 func (c *darwinClientController) showLauncher() error {
-	htmlText := renderDarwinClientHTML(c.logoURL)
-	c.view.Dispatch(func() { c.view.SetHtml(htmlText) })
+	htmlText := renderDarwinClientHTML(c.logoURL, false)
+	dataURL := "data:text/html;base64," + base64.StdEncoding.EncodeToString([]byte(htmlText))
+	c.view.Dispatch(func() { c.view.Navigate(dataURL) })
 	return nil
 }
 
@@ -420,13 +461,14 @@ func setDarwinClientAutoStart(enabled bool) error {
 	return os.WriteFile(path, []byte(plist), 0600)
 }
 
-func renderDarwinClientHTML(logoURL string) string {
+func renderDarwinClientHTML(logoURL string, autoConnect bool) string {
 	page := `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LanChatGo 客户端</title><style>
 :root{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;color:#1d2737;background:#f3f5f8}*{box-sizing:border-box}body{margin:0}.top{height:70px;display:flex;align-items:center;padding:0 28px;border-bottom:1px solid #dfe4ec;background:#fff}.logo{width:44px;height:44px;border-radius:11px}.brand{margin-left:12px;font-size:20px;font-weight:800}.version{margin-left:8px;padding:2px 7px;border-radius:99px;background:#edf3ff;color:#2f6fed;font-size:10px}.shell{width:min(940px,calc(100% - 32px));margin:24px auto;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px}.card{overflow:hidden;border:1px solid #dfe4ec;border-radius:14px;background:#fff}.head{padding:19px;border-bottom:1px solid #e7ebf1}.title{font-size:18px;font-weight:800}.note{margin-top:6px;color:#758196;font-size:11px}.body{padding:17px}.status{padding:11px 13px;border-radius:9px;background:#edf3ff;color:#3869b4;font-size:11px}.servers{display:grid;gap:8px;margin-top:12px}.server{width:100%;display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px;border:1px solid #dfe5ee;border-radius:10px;background:#fff;text-align:left}.server:hover{border-color:#8db5f5}.icon{width:42px;height:42px;display:grid;place-items:center;border-radius:9px;background:#2f6fed;color:#fff;font-weight:800}.name{font-size:13px;font-weight:750}.url{margin-top:4px;color:#758196;font-size:10px}.tag{color:#16835d;font-size:10px}.empty{padding:30px;color:#8994a5;text-align:center;font-size:11px}.manual{display:flex;gap:8px;margin-top:13px}.input{min-width:0;flex:1;height:40px;padding:0 11px;border:1px solid #d8e0ea;border-radius:9px;outline:0}button{height:40px;padding:0 13px;border:1px solid #d8e0ea;border-radius:9px;background:#fff;color:#34435a;cursor:pointer}.primary{border-color:#2f6fed;background:#2f6fed;color:#fff;font-weight:700}.side-title{padding:17px;border-bottom:1px solid #e7ebf1;font-size:14px;font-weight:800}.option{display:flex;align-items:center;gap:12px;padding:15px 17px;border-bottom:1px solid #edf0f4}.copy{min-width:0;flex:1}.option-name{font-size:12px;font-weight:700}.option-note{margin-top:4px;color:#7a8698;font-size:9px;line-height:1.5}.switch{width:18px;height:18px;accent-color:#2f6fed}@media(max-width:720px){.shell{grid-template-columns:1fr}}</style></head><body>
 <header class="top"><img class="logo" src="{{LOGO}}"><span class="brand">LanChatGo 客户端</span><span class="version">v{{VERSION}}</span></header>
 <main class="shell"><section class="card"><div class="head"><div class="title">连接服务端</div><div class="note">启动时仅进行一次低频局域网广播发现，不逐个扫描 IP 或端口。</div></div><div class="body"><div id="status" class="status">正在准备…</div><div id="servers" class="servers"></div><form id="manual" class="manual"><input id="address" class="input" placeholder="例如 https://192.168.1.10"><button class="primary">连接</button><button id="scan" type="button">重新扫描</button></form></div></section>
 <aside class="card"><div class="side-title">客户端设置</div><label class="option"><span class="copy"><span class="option-name">开机自动启动</span><span class="option-note">登录 macOS 后自动启动客户端</span></span><input id="autoStart" class="switch" type="checkbox"></label><label class="option"><span class="copy"><span class="option-name">新消息通知</span><span class="option-note">使用 macOS 通知与 Dock 提醒</span></span><input id="notifications" class="switch" type="checkbox"></label></aside></main>
-<script>(function(){'use strict';var state;function $(id){return document.getElementById(id)}function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}function render(){if(!state)return;$('status').textContent=state.status||'等待操作';if(document.activeElement!==$('address'))$('address').value=state.serverUrl||'';$('autoStart').checked=!!state.autoStart;$('notifications').checked=!!state.notifications;var rows=(state.servers||[]).map(function(s){return'<button class="server" type="button" data-url="'+esc(s.url)+'"><span class="icon">LC</span><span><span class="name">'+esc(s.name||'LanChatGo')+' · v'+esc(s.version||'?')+'</span><span class="url">'+esc(s.url)+'</span></span><span class="tag">连接</span></button>'}).join('');$('servers').innerHTML=rows||'<div class="empty">暂未发现服务，可手动输入地址。</div>';$('servers').querySelectorAll('.server').forEach(function(b){b.onclick=function(){window.clientConnect(b.dataset.url).catch(alert)}})}async function refresh(){state=await window.clientGetState();render()}$('manual').onsubmit=function(e){e.preventDefault();window.clientConnect($('address').value).catch(function(e){alert(e.message||e)})};$('scan').onclick=async function(){state=await window.clientScan();render()};['autoStart','notifications'].forEach(function(k){$(k).onchange=async function(){try{state=await window.clientSetOption(k,$(k).checked);render()}catch(e){alert(e.message||e);refresh()}}});(async function(){await refresh();if(state.serverUrl){window.clientConnect(state.serverUrl);return}state=await window.clientScan();render();if(state.servers&&state.servers.length===1)window.clientConnect(state.servers[0].url)})()})();</script></body></html>`
+<script>(function(){'use strict';var state,autoConnect={{AUTO_CONNECT}};function $(id){return document.getElementById(id)}function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}function render(){if(!state)return;$('status').textContent=state.status||'等待操作';if(document.activeElement!==$('address'))$('address').value=state.serverUrl||'';$('autoStart').checked=!!state.autoStart;$('notifications').checked=!!state.notifications;var rows=(state.servers||[]).map(function(s){return'<button class="server" type="button" data-url="'+esc(s.url)+'"><span class="icon">LC</span><span><span class="name">'+esc(s.name||'LanChatGo')+' · v'+esc(s.version||'?')+'</span><span class="url">'+esc(s.url)+'</span></span><span class="tag">连接</span></button>'}).join('');$('servers').innerHTML=rows||'<div class="empty">暂未发现服务，可手动输入地址。</div>';$('servers').querySelectorAll('.server').forEach(function(b){b.onclick=function(){window.clientConnect(b.dataset.url).catch(alert)}})}async function refresh(){state=await window.clientGetState();render()}$('manual').onsubmit=function(e){e.preventDefault();window.clientConnect($('address').value).catch(function(e){alert(e.message||e)})};$('scan').onclick=async function(){state=await window.clientScan();render()};['autoStart','notifications'].forEach(function(k){$(k).onchange=async function(){try{state=await window.clientSetOption(k,$(k).checked);render()}catch(e){alert(e.message||e);refresh()}}});(async function(){await refresh();if(!autoConnect)return;if(state.serverUrl){window.clientConnect(state.serverUrl);return}state=await window.clientScan();render();if(state.servers&&state.servers.length===1)window.clientConnect(state.servers[0].url)})()})();</script></body></html>`
 	page = strings.ReplaceAll(page, "{{LOGO}}", logoURL)
-	return strings.ReplaceAll(page, "{{VERSION}}", appinfo.Version)
+	page = strings.ReplaceAll(page, "{{VERSION}}", appinfo.Version)
+	return strings.ReplaceAll(page, "{{AUTO_CONNECT}}", fmt.Sprint(autoConnect))
 }
