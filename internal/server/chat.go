@@ -74,6 +74,8 @@ const (
 	ChatMessageKindText  = "text"
 	ChatMessageKindImage = "image"
 	ChatMessageKindFile  = "file"
+	ChatMessageKindCode  = "code"
+	ChatMessageKindDice  = "dice"
 )
 
 // ChatMessage is one message retained in an in-memory conversation.
@@ -119,6 +121,7 @@ type ChatClientInfo struct {
 	Port        string    `json:"port"`
 	Browser     string    `json:"browser"`
 	OS          string    `json:"os"`
+	ClientType  string    `json:"clientType,omitempty"`
 	UserAgent   string    `json:"userAgent"`
 	ConnectedAt time.Time `json:"connectedAt"`
 }
@@ -421,7 +424,8 @@ func newChatHub() *chatHub {
 }
 
 // SetUserGroupCreationEnabled controls whether browsers may create private
-// multi-user groups. The built-in system group is unaffected.
+// multi-user groups. The legacy built-in group remains only for the native
+// compatibility API and is never exposed by the LanChatGo portal.
 func (s *Server) SetUserGroupCreationEnabled(enabled bool) {
 	s.chat.mu.Lock()
 	s.chat.groupCreate = enabled
@@ -1287,8 +1291,23 @@ func clientInfoFromRequest(r *http.Request) ChatClientInfo {
 		Port:        port,
 		Browser:     browser,
 		OS:          osFromUserAgent(userAgent, platform, platformVersion),
+		ClientType:  clientTypeFromRequest(r),
 		UserAgent:   userAgent,
 		ConnectedAt: time.Now().UTC(),
+	}
+}
+
+func clientTypeFromRequest(r *http.Request) string {
+	if r == nil {
+		return "Web"
+	}
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("client"))) {
+	case "windows":
+		return "Windows 客户端"
+	case "macos":
+		return "macOS 客户端"
+	default:
+		return "Web"
 	}
 }
 
@@ -1762,6 +1781,10 @@ func (p *chatPeer) readPump(h *chatHub) {
 					err = h.receiveImage(p, incoming.Mime, incoming.Data)
 				case ChatMessageKindFile:
 					err = h.receiveFile(p, incoming.FileName, incoming.Mime, incoming.Data, "")
+				case ChatMessageKindCode:
+					err = h.receiveCode(p, incoming.Text)
+				case ChatMessageKindDice:
+					err = h.receiveDice(p)
 				default:
 					err = errors.New("未知的消息类型")
 				}
@@ -1779,6 +1802,18 @@ func (p *chatPeer) readPump(h *chatHub) {
 			}
 		case "dissolveGroup":
 			if err := h.dissolveUserGroup(p, incoming.GroupID); err != nil {
+				p.enqueue(chatWireMessage{Type: "error", Text: err.Error()})
+			}
+		case "renameGroup":
+			if err := h.renameUserGroup(p, incoming.GroupID, incoming.Name); err != nil {
+				p.enqueue(chatWireMessage{Type: "error", Text: err.Error()})
+			}
+		case "addGroupMembers":
+			if err := h.addUserGroupMembers(p, incoming.GroupID, incoming.Members); err != nil {
+				p.enqueue(chatWireMessage{Type: "error", Text: err.Error()})
+			}
+		case "removeGroupMember":
+			if err := h.removeUserGroupMember(p, incoming.GroupID, incoming.TargetID); err != nil {
 				p.enqueue(chatWireMessage{Type: "error", Text: err.Error()})
 			}
 		case "image":
@@ -1847,6 +1882,47 @@ func (h *chatHub) receiveMessage(peer *chatPeer, text string) error {
 		Kind:   ChatMessageKindText,
 		Sender: "user",
 		Text:   cleaned,
+		SentAt: time.Now().UTC(),
+	})
+}
+
+func (h *chatHub) receiveCode(peer *chatPeer, text string) error {
+	cleaned, err := cleanChatText(text)
+	if err != nil {
+		return err
+	}
+	return h.receivePeerChatMessage(peer, ChatMessage{
+		ID:     newChatMessageID(),
+		Kind:   ChatMessageKindCode,
+		Sender: "user",
+		Text:   cleaned,
+		SentAt: time.Now().UTC(),
+	})
+}
+
+func secureDicePoint() (int, error) {
+	var value [1]byte
+	for {
+		if _, err := rand.Read(value[:]); err != nil {
+			return 0, err
+		}
+		// 252 is divisible by six, avoiding modulo bias.
+		if value[0] < 252 {
+			return int(value[0]%6) + 1, nil
+		}
+	}
+}
+
+func (h *chatHub) receiveDice(peer *chatPeer) error {
+	point, err := secureDicePoint()
+	if err != nil {
+		return errors.New("骰子生成失败，请稍后重试")
+	}
+	return h.receivePeerChatMessage(peer, ChatMessage{
+		ID:     newChatMessageID(),
+		Kind:   ChatMessageKindDice,
+		Sender: "user",
+		Text:   strconv.Itoa(point),
 		SentAt: time.Now().UTC(),
 	})
 }
@@ -1977,6 +2053,120 @@ func (h *chatHub) dissolveUserGroup(peer *chatPeer, groupID string) error {
 	return nil
 }
 
+func (h *chatHub) renameUserGroup(peer *chatPeer, groupID, rawName string) error {
+	name, err := cleanChatName(rawName)
+	if err != nil || strings.TrimSpace(name) == "" {
+		if err == nil {
+			err = errors.New("群名称不能为空")
+		}
+		return err
+	}
+	groupID = strings.TrimSpace(groupID)
+	h.mu.Lock()
+	group := h.userGroups[groupID]
+	if group == nil {
+		h.mu.Unlock()
+		return errors.New("群聊不存在")
+	}
+	if normalizeChatIP(group.OwnerIP) != normalizeChatIP(peer.ip) {
+		h.mu.Unlock()
+		return errors.New("只有群主可以修改群名称")
+	}
+	group.Name = name
+	group.UpdatedAt = time.Now().UTC()
+	snapshot := group.ChatGroup
+	persistence := h.persistence
+	slow := h.broadcastGroupListsLocked()
+	h.mu.Unlock()
+	shutdownSlowChatPeers(slow)
+	if store, ok := persistence.(ChatGroupPersistence); ok {
+		if err = store.SaveChatGroup(snapshot); err != nil {
+			return fmt.Errorf("保存群名称失败：%w", err)
+		}
+	}
+	h.logIPOperation(peer.ip, "修改群名称 "+groupID)
+	return nil
+}
+
+func (h *chatHub) addUserGroupMembers(peer *chatPeer, groupID string, members []string) error {
+	groupID = strings.TrimSpace(groupID)
+	h.mu.Lock()
+	group := h.userGroups[groupID]
+	if group == nil {
+		h.mu.Unlock()
+		return errors.New("群聊不存在")
+	}
+	if normalizeChatIP(group.OwnerIP) != normalizeChatIP(peer.ip) {
+		h.mu.Unlock()
+		return errors.New("只有群主可以邀请新成员")
+	}
+	combined := append(append([]string(nil), group.Members...), members...)
+	normalized := normalizeGroupMembers(combined)
+	filtered := normalized[:0]
+	for _, member := range normalized {
+		user := h.users[member]
+		if user == nil || user.Blacklisted {
+			continue
+		}
+		filtered = append(filtered, member)
+	}
+	if len(filtered) == len(group.Members) {
+		h.mu.Unlock()
+		return errors.New("没有可加入的新成员")
+	}
+	group.Members = append([]string(nil), filtered...)
+	group.UpdatedAt = time.Now().UTC()
+	snapshot := group.ChatGroup
+	persistence := h.persistence
+	slow := h.broadcastGroupListsLocked()
+	h.mu.Unlock()
+	shutdownSlowChatPeers(slow)
+	if store, ok := persistence.(ChatGroupPersistence); ok {
+		if err := store.SaveChatGroup(snapshot); err != nil {
+			return fmt.Errorf("保存群成员失败：%w", err)
+		}
+	}
+	h.logIPOperation(peer.ip, "邀请成员加入群聊 "+groupID)
+	return nil
+}
+
+func (h *chatHub) removeUserGroupMember(peer *chatPeer, groupID, rawTarget string) error {
+	groupID = strings.TrimSpace(groupID)
+	target := normalizeChatIP(rawTarget)
+	h.mu.Lock()
+	group := h.userGroups[groupID]
+	if group == nil {
+		h.mu.Unlock()
+		return errors.New("群聊不存在")
+	}
+	if normalizeChatIP(group.OwnerIP) != normalizeChatIP(peer.ip) {
+		h.mu.Unlock()
+		return errors.New("只有群主可以移除群成员")
+	}
+	if target == "" || !containsIP(group.Members, target) {
+		h.mu.Unlock()
+		return errors.New("群成员不存在")
+	}
+	if target == normalizeChatIP(group.OwnerIP) {
+		h.mu.Unlock()
+		return errors.New("群主不能移除自己")
+	}
+	group.Members = removeIP(group.Members, target)
+	group.UpdatedAt = time.Now().UTC()
+	snapshot := group.ChatGroup
+	persistence := h.persistence
+	slow := h.broadcastGroupListsLocked()
+	h.mu.Unlock()
+	shutdownSlowChatPeers(slow)
+	if store, ok := persistence.(ChatGroupPersistence); ok {
+		if err := store.SaveChatGroup(snapshot); err != nil {
+			return fmt.Errorf("保存群成员失败：%w", err)
+		}
+	}
+	h.logIPOperation(peer.ip, "移除群成员 "+target+" "+groupID)
+	return nil
+}
+
 func (h *chatHub) receiveGroupTargetedMessage(peer *chatPeer, incoming chatClientMessage, groupID string) error {
 	groupID = strings.TrimSpace(groupID)
 	var message ChatMessage
@@ -1999,6 +2189,18 @@ func (h *chatHub) receiveGroupTargetedMessage(peer *chatPeer, incoming chatClien
 			return err
 		}
 		message = ChatMessage{Kind: ChatMessageKindFile, Mime: mimeType, Data: data, FileName: name, FileSize: int64(len(data))}
+	case ChatMessageKindCode:
+		text, err := cleanChatText(incoming.Text)
+		if err != nil {
+			return err
+		}
+		message = ChatMessage{Kind: ChatMessageKindCode, Text: text}
+	case ChatMessageKindDice:
+		point, err := secureDicePoint()
+		if err != nil {
+			return errors.New("骰子生成失败，请稍后重试")
+		}
+		message = ChatMessage{Kind: ChatMessageKindDice, Text: strconv.Itoa(point)}
 	default:
 		return errors.New("未知的消息类型")
 	}
@@ -2133,6 +2335,18 @@ func (h *chatHub) receiveTargetedMessage(peer *chatPeer, incoming chatClientMess
 			return err
 		}
 		message = ChatMessage{Kind: ChatMessageKindFile, Mime: mime, Data: data, FileName: name, FileSize: int64(len(data))}
+	case ChatMessageKindCode:
+		text, err := cleanChatText(incoming.Text)
+		if err != nil {
+			return err
+		}
+		message = ChatMessage{Kind: ChatMessageKindCode, Text: text}
+	case ChatMessageKindDice:
+		point, err := secureDicePoint()
+		if err != nil {
+			return errors.New("骰子生成失败，请稍后重试")
+		}
+		message = ChatMessage{Kind: ChatMessageKindDice, Text: strconv.Itoa(point)}
 	default:
 		return errors.New("未知的消息类型")
 	}

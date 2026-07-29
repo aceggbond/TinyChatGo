@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && !client
 
 package gui
 
@@ -15,7 +15,7 @@ import (
 	unicodeutf16 "unicode/utf16"
 	"unsafe"
 
-	"hfsgo/internal/server"
+	"lanchatgo/internal/server"
 )
 
 var (
@@ -239,11 +239,4 @@ func fitChatImage(width, height int) (int, int) {
 	width = maxInt(1, int(float64(width)*scale+0.5))
 	height = maxInt(1, int(float64(height)*scale+0.5))
 	return width, height
-}
-
-func maxInt(left, right int) int {
-	if left > right {
-		return left
-	}
-	return right
 }

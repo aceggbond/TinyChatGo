@@ -15,8 +15,8 @@ import (
 	"time"
 	"unsafe"
 
-	"hfsgo/internal/database"
-	"hfsgo/internal/server"
+	"lanchatgo/internal/database"
+	"lanchatgo/internal/server"
 )
 
 func TestModernControllerSettingsAndServerLifecycle(t *testing.T) {

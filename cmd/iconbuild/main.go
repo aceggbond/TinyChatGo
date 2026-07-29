@@ -32,7 +32,7 @@ func main() {
 		images = append(images, encoded.Bytes())
 	}
 
-	output, err := os.Create("hfs-go.ico")
+	output, err := os.Create("lanchatgo.ico")
 	if err != nil {
 		panic(err)
 	}
@@ -72,7 +72,7 @@ func main() {
 			panic(err)
 		}
 	}
-	fmt.Printf("generated hfs-go.ico from logo.png with %d sizes\n", len(images))
+	fmt.Printf("generated lanchatgo.ico from logo.png with %d sizes\n", len(images))
 }
 
 func downsample(source image.Image, width, height int) *image.NRGBA {

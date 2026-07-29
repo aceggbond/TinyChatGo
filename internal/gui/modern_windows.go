@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && !client
 
 package gui
 
@@ -25,8 +25,8 @@ import (
 
 	webview "github.com/jchv/go-webview2"
 
-	"hfsgo/internal/database"
-	"hfsgo/internal/server"
+	"lanchatgo/internal/database"
+	"lanchatgo/internal/server"
 )
 
 // rsrc stores the icon group at resource ID 1. ID 2 is the individual image
@@ -195,7 +195,7 @@ func Run(logo, donation []byte) error {
 	settings.AllowUpload = false
 	settings.AllowDownload = false
 	settings.AllowChat = true
-	settings.GroupChat = true
+	settings.GroupChat = false
 	srv.SetAccess(settings.Password, false, false, false)
 	srv.SetHTTPSRedirect(settings.RedirectToHTTPS, settings.AccessHost, settings.HTTPSPort)
 	srv.SetChatEnabled(true)
@@ -239,7 +239,7 @@ func Run(logo, donation []byte) error {
 		DataPath:  filepath.Join(os.TempDir(), "lanchatgo-webview2"),
 		AutoFocus: true,
 		WindowOptions: webview.WindowOptions{
-			Title:  "LanChatGo",
+			Title:  "LCGS - LanChatGoServer",
 			Width:  1240,
 			Height: 820,
 			IconId: modernIconResourceID,
@@ -489,9 +489,10 @@ func modernWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr
 		handleModernShareDrop(paths)
 		return 0
 	case wmTray:
-		if lParam == 0x203 || lParam == 0x405 {
+		switch trayCallbackEvent(lParam) {
+		case 0x203, 0x405:
 			restoreFromTray()
-		} else if lParam == 0x205 {
+		case 0x205, wmContextMenu:
 			showTrayMenu()
 		}
 		return 0
@@ -926,7 +927,7 @@ func validateModernSettings(settings persistedSettings, addresses []modernAddres
 	settings.AllowChat = true
 	settings.AllowUpload = false
 	settings.AllowDownload = false
-	settings.GroupChat = true
+	settings.GroupChat = false
 	if !settings.ShowUserList {
 		settings.AllowPrivateChat = false
 	}

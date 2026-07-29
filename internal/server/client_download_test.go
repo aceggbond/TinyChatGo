@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"hfsgo/internal/appinfo"
+	"lanchatgo/internal/appinfo"
 )
 
 func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
@@ -24,7 +24,7 @@ func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
 		t.Fatalf("disabled client-download header = %q", got)
 	}
 	if !strings.Contains(recorder.Body.String(), `id="client-download"`) ||
-		!strings.Contains(recorder.Body.String(), `id="client-download" class="client-download" href="/__hfs/client/download" hidden`) {
+		!strings.Contains(recorder.Body.String(), `id="web-download-row" class="settings-row" hidden`) {
 		t.Fatal("disabled client download is not rendered hidden")
 	}
 
@@ -42,13 +42,12 @@ func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
 		t.Fatalf("enabled client-download header = %q", got)
 	}
 	body := recorder.Body.String()
-	if strings.Contains(body, `href="/__hfs/client/download" hidden`) {
+	if strings.Contains(body, `id="web-download-row" class="settings-row" hidden`) {
 		t.Fatal("enabled client download remained hidden")
 	}
 	for _, marker := range []string{
-		`clientDownload.hidden=true`,
 		`notifyButton.hidden=true`,
-		`nativeSettings.hidden=false`,
+		`$('native-settings').hidden=!nativeClient`,
 		`clientPlatform.indexOf('mac')`,
 		`'下载 macOS ARM 客户端':'下载 Windows 客户端'`,
 	} {
@@ -59,14 +58,12 @@ func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
 
 	downloadRecorder = httptest.NewRecorder()
 	s.ServeHTTP(downloadRecorder, downloadRequest)
-	if downloadRecorder.Code != http.StatusOK {
+	if downloadRecorder.Code != http.StatusTemporaryRedirect {
 		t.Fatalf("enabled download status = %d", downloadRecorder.Code)
 	}
-	if got := downloadRecorder.Header().Get("Content-Disposition"); got != `attachment; filename="LanChatGo-Client-windows-amd64.exe"` {
-		t.Fatalf("content disposition = %q", got)
-	}
-	if downloadRecorder.Header().Get("Content-Length") == "" {
-		t.Fatal("client download did not expose a content length")
+	wantDownload := "https://github.com/aceggbond/LanChatGo/releases/download/" + appinfo.Tag + "/LanChatGo-Client-windows-amd64.exe"
+	if got := downloadRecorder.Header().Get("Location"); got != wantDownload {
+		t.Fatalf("Windows client redirect = %q, want %q", got, wantDownload)
 	}
 }
 
@@ -121,6 +118,8 @@ func TestPortalComposerOffersUnifiedImageFileAndEmojiTools(t *testing.T) {
 		`id="emoji-button" class="compose-tool"`,
 		`id="chat-image-button" class="compose-tool"`,
 		`id="chat-file-button" class="compose-tool"`,
+		`id="chat-code-button" class="compose-tool"`,
+		`id="chat-dice-button" class="compose-tool"`,
 		`id="chat-image-input" class="compose-file-input" type="file"`,
 		`id="chat-file-input" class="compose-file-input" type="file"`,
 		`queueFiles(imageInput.files)`,
@@ -132,5 +131,31 @@ func TestPortalComposerOffersUnifiedImageFileAndEmojiTools(t *testing.T) {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("responsive chat composer missing %q", marker)
 		}
+	}
+}
+
+func TestFluentEmojiAssetsAreEmbeddedAndCacheable(t *testing.T) {
+	s := New(io.Discard)
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/__hfs/fluent-emoji/red_heart.png", nil)
+	recorder := httptest.NewRecorder()
+	s.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("emoji asset status = %d", recorder.Code)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("emoji content type = %q", got)
+	}
+	if !strings.Contains(recorder.Header().Get("Cache-Control"), "immutable") {
+		t.Fatalf("emoji cache control = %q", recorder.Header().Get("Cache-Control"))
+	}
+	if recorder.Body.Len() < 100 {
+		t.Fatalf("emoji asset is unexpectedly small: %d bytes", recorder.Body.Len())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "http://example.test/__hfs/fluent-emoji/unknown.png", nil)
+	recorder = httptest.NewRecorder()
+	s.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("unknown emoji asset status = %d", recorder.Code)
 	}
 }

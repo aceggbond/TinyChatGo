@@ -41,14 +41,18 @@ type ChatPublicGroup struct {
 
 // ChatPublicUser is the small, non-sensitive user record sent to browsers.
 type ChatPublicUser struct {
-	IP        string `json:"ip"`
-	Name      string `json:"name"`
-	Alias     string `json:"alias,omitempty"`
-	Avatar    string `json:"avatar,omitempty"`
-	Remark    string `json:"remark,omitempty"`
-	SearchKey string `json:"searchKey,omitempty"`
-	Online    bool   `json:"online"`
-	Me        bool   `json:"me,omitempty"`
+	IP         string `json:"ip"`
+	Port       string `json:"port,omitempty"`
+	Name       string `json:"name"`
+	Alias      string `json:"alias,omitempty"`
+	Avatar     string `json:"avatar,omitempty"`
+	Remark     string `json:"remark,omitempty"`
+	SearchKey  string `json:"searchKey,omitempty"`
+	Browser    string `json:"browser,omitempty"`
+	OS         string `json:"os,omitempty"`
+	ClientType string `json:"clientType,omitempty"`
+	Online     bool   `json:"online"`
+	Me         bool   `json:"me,omitempty"`
 }
 
 // ChatRemark is a private contact name. Each browser IP owns its own remarks,
@@ -128,6 +132,38 @@ type ChatArchivePage struct {
 	Pages    int               `json:"pages"`
 }
 
+// ChatHistoryQuery selects one page of persisted text messages.
+type ChatHistoryQuery struct {
+	ViewerIP       string
+	ConversationID string
+	GroupMembers   map[string][]string
+	Query          string
+	From           time.Time
+	To             time.Time
+	Page           int
+	PageSize       int
+}
+
+type ChatHistoryItem struct {
+	MessageID      string    `json:"messageId"`
+	ConversationID string    `json:"conversationId"`
+	Kind           string    `json:"kind"`
+	Text           string    `json:"text"`
+	SentAt         time.Time `json:"sentAt"`
+	SenderIP       string    `json:"senderIp"`
+	SenderName     string    `json:"senderName,omitempty"`
+	TargetID       string    `json:"targetId,omitempty"`
+	Private        bool      `json:"private,omitempty"`
+}
+
+type ChatHistoryPage struct {
+	Items    []ChatHistoryItem `json:"items"`
+	Page     int               `json:"page"`
+	PageSize int               `json:"pageSize"`
+	Total    int               `json:"total"`
+	Pages    int               `json:"pages"`
+}
+
 // Persistence is implemented by the desktop database. Tests and embedders may
 // leave it unset; the server then keeps the historical in-memory behaviour.
 type Persistence interface {
@@ -167,4 +203,9 @@ type ChatGroupPersistence interface {
 // Keeping it separate avoids forcing in-memory embedders to implement it.
 type ChatReadPersistence interface {
 	MarkChatMessagesRead([]string, time.Time) error
+}
+
+// ChatHistoryPersistence is an optional durable text-message search index.
+type ChatHistoryPersistence interface {
+	ListChatMessages(ChatHistoryQuery) (ChatHistoryPage, error)
 }

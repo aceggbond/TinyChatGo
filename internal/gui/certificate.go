@@ -1,3 +1,5 @@
+//go:build !client
+
 package gui
 
 import (
@@ -23,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"hfsgo/internal/database"
+	"lanchatgo/internal/database"
 )
 
 const (

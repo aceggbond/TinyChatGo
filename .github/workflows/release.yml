@@ -26,24 +26,26 @@ jobs:
           go test ./... -run '^$'
           go vet ./...
           go test ./internal/database
-          go test ./internal/server -run 'TestClientDownloadToggleControlsPortalAndExecutable|TestClientDownloadDetectsMacOSAndUsesArm64Release|TestPortalChatActionsUseCompactDropdown' -count=1
+          go test ./internal/server -run 'TestClientDownloadToggleControlsPortalAndExecutable|TestClientDownloadDetectsMacOSAndUsesArm64Release|TestPortalChatRecordsAndContactContextActions|TestPortalSettingsAndFluentEmojiPicker' -count=1
           go test ./internal/gui -run 'TestConfigureClientWebView2TLSKeepsExistingArguments|TestCompareVersionNumbers|TestValidProjectURLIsRestrictedToRepository' -count=1
 
       - name: Build Windows x64 server and client
         shell: pwsh
         run: |
-          go build -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o LanChatGo.exe .
-          Copy-Item LanChatGo.exe LanChatGo-Client-windows-amd64.exe -Force
-          Compress-Archive -Path LanChatGo.exe,LanChatGo-Client-windows-amd64.exe -DestinationPath LanChatGo-windows-amd64.zip -Force
+          go run ./cmd/iconbuild
+          go install github.com/akavel/rsrc@v0.10.2
+          & (Join-Path (go env GOPATH) "bin\rsrc.exe") -arch amd64 -ico lanchatgo.ico -o rsrc_windows_amd64.syso
+          Remove-Item -LiteralPath lanchatgo.ico -Force
+          go build -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o LanChatGoServer.exe .
+          go build -tags client -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o LanChatGo-Client-windows-amd64.exe .
 
       - name: Upload Windows release files
         uses: actions/upload-artifact@v7
         with:
           name: windows-release
           path: |
-            LanChatGo.exe
+            LanChatGoServer.exe
             LanChatGo-Client-windows-amd64.exe
-            LanChatGo-windows-amd64.zip
 
   macos:
     runs-on: macos-14
@@ -72,8 +74,20 @@ jobs:
         run: |
           APP="LanChatGo-Client.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          go build -trimpath -buildvcs=false -ldflags "-s -w" -o "$APP/Contents/MacOS/LanChatGo-Client" .
-          cp logo.png "$APP/Contents/Resources/logo.png"
+          go build -tags client -trimpath -buildvcs=false -ldflags "-s -w" -o "$APP/Contents/MacOS/LanChatGo-Client" .
+          ICONSET="LanChatGo.iconset"
+          mkdir -p "$ICONSET"
+          sips -z 16 16 logo.png --out "$ICONSET/icon_16x16.png"
+          sips -z 32 32 logo.png --out "$ICONSET/icon_16x16@2x.png"
+          sips -z 32 32 logo.png --out "$ICONSET/icon_32x32.png"
+          sips -z 64 64 logo.png --out "$ICONSET/icon_32x32@2x.png"
+          sips -z 128 128 logo.png --out "$ICONSET/icon_128x128.png"
+          sips -z 256 256 logo.png --out "$ICONSET/icon_128x128@2x.png"
+          sips -z 256 256 logo.png --out "$ICONSET/icon_256x256.png"
+          sips -z 512 512 logo.png --out "$ICONSET/icon_256x256@2x.png"
+          sips -z 512 512 logo.png --out "$ICONSET/icon_512x512.png"
+          sips -z 1024 1024 logo.png --out "$ICONSET/icon_512x512@2x.png"
+          iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/LanChatGo.icns"
           cat > "$APP/Contents/Info.plist" <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -83,9 +97,9 @@ jobs:
             <key>CFBundleIdentifier</key><string>com.aceggbond.LanChatGo</string>
             <key>CFBundleName</key><string>LanChatGo</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>2.0.3</string>
-            <key>CFBundleVersion</key><string>2.0.3</string>
-            <key>CFBundleIconFile</key><string>logo.png</string>
+            <key>CFBundleShortVersionString</key><string>2.1.0</string>
+            <key>CFBundleVersion</key><string>2.1.0</string>
+            <key>CFBundleIconFile</key><string>LanChatGo.icns</string>
             <key>LSMinimumSystemVersion</key><string>11.0</string>
             <key>NSHighResolutionCapable</key><true/>
           </dict></plist>
@@ -114,9 +128,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           files=(
-            dist/LanChatGo.exe
+            dist/LanChatGoServer.exe
             dist/LanChatGo-Client-windows-amd64.exe
-            dist/LanChatGo-windows-amd64.zip
             dist/LanChatGo-Client-macos-arm64.zip
           )
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then

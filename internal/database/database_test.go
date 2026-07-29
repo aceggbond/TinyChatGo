@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"hfsgo/internal/server"
+	"lanchatgo/internal/server"
 )
 
 func TestDatabasePersistsApplicationAndChatData(t *testing.T) {
@@ -130,6 +130,13 @@ func TestDatabasePersistsApplicationAndChatData(t *testing.T) {
 	if readErr != nil || string(gotImage) != string(imageData) {
 		t.Fatalf("attachment = %x, %v", gotImage, readErr)
 	}
+	history, err := store.ListChatMessages(server.ChatHistoryQuery{
+		Query: "持久化", Page: 1, PageSize: 30,
+	})
+	if err != nil || history.Total != 1 || len(history.Items) != 1 ||
+		history.Items[0].MessageID != text.ID || history.Items[0].Text != text.Text {
+		t.Fatalf("chat history search = %#v, %v", history, err)
+	}
 
 	if err = store.SaveAccessRecord(server.AccessRecord{At: now, IP: user.IP, Operation: "下载文件"}); err != nil {
 		t.Fatal(err)
@@ -184,5 +191,61 @@ func TestDatabasePersistsChatReadReceipt(t *testing.T) {
 	}
 	if len(messages) != 1 || !messages[0].Message.Read || messages[0].Message.ReadAt.IsZero() {
 		t.Fatalf("persisted read receipt = %#v", messages)
+	}
+}
+
+func TestChatHistorySearchRespectsConversationVisibility(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "lanchatgo.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	directID := "direct:192.0.2.31|192.0.2.32"
+	groupID := "group:project-team"
+	for index, entry := range []struct {
+		conversationID string
+		text           string
+	}{
+		{server.ChatGroupConversationID, "系统群消息"},
+		{directID, "私聊消息"},
+		{groupID, "自建群消息"},
+	} {
+		if _, err = store.SaveChatMessage(entry.conversationID, server.ChatMessage{
+			ID:       "visibility-" + entry.text,
+			Kind:     server.ChatMessageKindText,
+			ClientID: "192.0.2.31",
+			Text:     entry.text,
+			SentAt:   now.Add(time.Duration(index) * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	visible, err := store.ListChatMessages(server.ChatHistoryQuery{
+		ViewerIP: "192.0.2.31",
+		Page:     1,
+		PageSize: 30,
+		GroupMembers: map[string][]string{
+			"project-team": {"192.0.2.31"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if visible.Total != 3 {
+		t.Fatalf("member-visible history = %#v", visible)
+	}
+
+	outsider, err := store.ListChatMessages(server.ChatHistoryQuery{
+		ViewerIP: "192.0.2.99", Page: 1, PageSize: 30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outsider.Total != 1 || len(outsider.Items) != 1 ||
+		outsider.Items[0].ConversationID != server.ChatGroupConversationID {
+		t.Fatalf("outsider-visible history = %#v", outsider)
 	}
 }

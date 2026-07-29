@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
-	"hfsgo/internal/appinfo"
-	"hfsgo/internal/discovery"
+	"lanchatgo/internal/appinfo"
+	"lanchatgo/internal/discovery"
 )
 
 type Share struct {
@@ -615,16 +615,16 @@ func (s *Server) serveClientDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	filename := "LanChatGo-Client-windows-amd64.exe"
 	contentType := "application/vnd.microsoft.portable-executable"
-	downloadPath := executable
+	downloadPath := filepath.Join(filepath.Dir(executable), filename)
 	if platform == "macos-arm64" {
 		filename = "LanChatGo-Client-macos-arm64.zip"
 		contentType = "application/zip"
 		downloadPath = filepath.Join(filepath.Dir(executable), filename)
-		if info, statErr := os.Stat(downloadPath); statErr != nil || !info.Mode().IsRegular() {
-			releaseURL := "https://github.com/aceggbond/LanChatGo/releases/download/" + appinfo.Tag + "/" + filename
-			http.Redirect(w, r, releaseURL, http.StatusTemporaryRedirect)
-			return
-		}
+	}
+	if info, statErr := os.Stat(downloadPath); statErr != nil || !info.Mode().IsRegular() {
+		releaseURL := "https://github.com/aceggbond/LanChatGo/releases/download/" + appinfo.Tag + "/" + filename
+		http.Redirect(w, r, releaseURL, http.StatusTemporaryRedirect)
+		return
 	}
 	file, err := os.Open(downloadPath)
 	if err != nil {
@@ -763,6 +763,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			_, _ = lw.Write(logo)
 		}
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/__hfs/fluent-emoji/") {
+		operation = "读取表情资源"
+		serveFluentEmoji(lw, r)
 		return
 	}
 	if r.URL.Path == "/__hfs/chat/status" {
@@ -1022,6 +1027,8 @@ func requestOperation(r *http.Request) string {
 		return "下载聊天附件"
 	case r.URL.Path == "/__hfs/logo.png":
 		return "读取界面资源"
+	case strings.HasPrefix(r.URL.Path, "/__hfs/fluent-emoji/"):
+		return "读取表情资源"
 	case r.Method == http.MethodPost && requestIsMultipart(r):
 		return "上传文件"
 	case r.Method == http.MethodPost:

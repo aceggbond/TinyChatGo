@@ -4,10 +4,13 @@ package gui
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/binary"
 	"image"
+	_ "image/jpeg"
 	"image/png"
 	"runtime"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -25,7 +28,27 @@ func createClientTrayAlertIcon(logo []byte) uintptr {
 	if err != nil {
 		return 0
 	}
-	iconBits := buildClientTrayAlertIconDIB(source, clientTrayAlertIconSize)
+	iconBits := buildClientTrayIconDIB(source, clientTrayAlertIconSize, true)
+	return createClientIcon(iconBits)
+}
+
+func createClientAvatarIcon(dataURL string) uintptr {
+	const prefix = "data:image/jpeg;base64,"
+	if !strings.HasPrefix(dataURL, prefix) {
+		return 0
+	}
+	encoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(dataURL, prefix))
+	if err != nil || len(encoded) == 0 || len(encoded) > 128<<10 {
+		return 0
+	}
+	source, _, err := image.Decode(bytes.NewReader(encoded))
+	if err != nil {
+		return 0
+	}
+	return createClientIcon(buildClientTrayIconDIB(source, 48, false))
+}
+
+func createClientIcon(iconBits []byte) uintptr {
 	if len(iconBits) == 0 {
 		return 0
 	}
@@ -34,8 +57,8 @@ func createClientTrayAlertIcon(logo []byte) uintptr {
 		uintptr(len(iconBits)),
 		1,
 		0x00030000,
-		clientTrayAlertIconSize,
-		clientTrayAlertIconSize,
+		0,
+		0,
 		0,
 	)
 	runtime.KeepAlive(iconBits)
@@ -43,6 +66,10 @@ func createClientTrayAlertIcon(logo []byte) uintptr {
 }
 
 func buildClientTrayAlertIconDIB(source image.Image, size int) []byte {
+	return buildClientTrayIconDIB(source, size, true)
+}
+
+func buildClientTrayIconDIB(source image.Image, size int, alert bool) []byte {
 	if source == nil || size <= 0 {
 		return nil
 	}
@@ -77,11 +104,10 @@ func buildClientTrayAlertIconDIB(source image.Image, size int) []byte {
 				continue
 			}
 
-			red, green, blue := clientTrayAlertColor(
-				uint8(red16>>8),
-				uint8(green16>>8),
-				uint8(blue16>>8),
-			)
+			red, green, blue := uint8(red16>>8), uint8(green16>>8), uint8(blue16>>8)
+			if alert {
+				red, green, blue = clientTrayAlertColor(red, green, blue)
+			}
 			pixel := headerSize + targetRow*colorStride + x*4
 			result[pixel] = premultiplyClientTrayColor(blue, alpha)
 			result[pixel+1] = premultiplyClientTrayColor(green, alpha)

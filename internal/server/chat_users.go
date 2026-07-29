@@ -485,7 +485,7 @@ func (s *Server) serveChatArchive(w http.ResponseWriter, r *http.Request, client
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
 	kind := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
-	if kind != "" && kind != ChatMessageKindImage && kind != ChatMessageKindFile {
+	if kind != "" && kind != ChatMessageKindText && kind != ChatMessageKindImage && kind != ChatMessageKindFile {
 		http.Error(w, "归档类型无效", http.StatusBadRequest)
 		return
 	}
@@ -536,6 +536,29 @@ func (s *Server) serveChatArchive(w http.ResponseWriter, r *http.Request, client
 			value = value.Add(24*time.Hour - time.Nanosecond)
 		}
 		return value.UTC()
+	}
+	if kind == ChatMessageKindText {
+		history, ok := persistence.(ChatHistoryPersistence)
+		if !ok {
+			http.Error(w, "聊天记录搜索尚未初始化", http.StatusServiceUnavailable)
+			return
+		}
+		result, err := history.ListChatMessages(ChatHistoryQuery{
+			ViewerIP: clientIP, ConversationID: conversationID,
+			GroupMembers: groupMembers,
+			Query:        r.URL.Query().Get("q"),
+			From:         parseDate(r.URL.Query().Get("from"), false),
+			To:           parseDate(r.URL.Query().Get("to"), true),
+			Page:         page, PageSize: pageSize,
+		})
+		if err != nil {
+			http.Error(w, "读取聊天记录失败", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(result)
+		return
 	}
 	result, err := persistence.ListChatAttachments(ChatArchiveQuery{
 		ViewerIP: clientIP, ConversationID: conversationID,
@@ -736,15 +759,38 @@ func (h *chatHub) publicUsersLocked(currentIP string) []ChatPublicUser {
 		}
 		return []ChatPublicUser{{
 			IP: currentIP, Name: displayChatUser(*user), Alias: user.Name, Avatar: user.Avatar,
+			Port: user.Client.Port, Browser: user.Client.Browser, OS: user.Client.OS, ClientType: user.Client.ClientType,
 			SearchKey: chatUserSearchKey(currentIP, user.Name), Online: true, Me: true,
 		}}
 	}
 	online := make(map[string]bool)
+	relevant := make(map[string]bool)
 	for _, peer := range h.peers {
 		online[peer.ip] = true
+		relevant[peer.ip] = true
 	}
-	items := make([]ChatPublicUser, 0, len(online))
-	for ip := range online {
+	relevant[currentIP] = true
+	for id := range h.direct {
+		first, second, ok := parseDirectConversationID(id)
+		if !ok || first != currentIP && second != currentIP {
+			continue
+		}
+		relevant[first] = true
+		relevant[second] = true
+	}
+	for _, group := range h.userGroups {
+		if group == nil || !containsIP(group.Members, currentIP) {
+			continue
+		}
+		for _, member := range group.Members {
+			relevant[normalizeChatIP(member)] = true
+		}
+	}
+	for ip := range h.remarks[currentIP] {
+		relevant[normalizeChatIP(ip)] = true
+	}
+	items := make([]ChatPublicUser, 0, len(relevant))
+	for ip := range relevant {
 		user := h.users[ip]
 		if user != nil && user.Blacklisted {
 			continue
@@ -760,15 +806,26 @@ func (h *chatHub) publicUsersLocked(currentIP string) []ChatPublicUser {
 			avatar = user.Avatar
 		}
 		remark := h.remarks[currentIP][ip]
+		client := ChatClientInfo{IP: ip}
+		if user != nil {
+			client = user.Client
+		}
 		items = append(items, ChatPublicUser{
-			IP: ip, Name: name, Alias: alias, Avatar: avatar, Remark: remark,
-			SearchKey: chatUserSearchKey(ip, strings.TrimSpace(alias+" "+remark)),
-			Online:    true, Me: ip == currentIP,
+			IP: ip, Port: client.Port, Name: name, Alias: alias, Avatar: avatar, Remark: remark,
+			SearchKey:  chatUserSearchKey(ip, strings.TrimSpace(alias+" "+remark)),
+			Browser:    client.Browser,
+			OS:         client.OS,
+			ClientType: client.ClientType,
+			Online:     online[ip],
+			Me:         ip == currentIP,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].Me != items[j].Me {
 			return items[i].Me
+		}
+		if items[i].Online != items[j].Online {
+			return items[i].Online
 		}
 		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
 	})

@@ -24,8 +24,8 @@ import (
 	webview "github.com/jchv/go-webview2"
 	"golang.org/x/sys/windows/registry"
 
-	"hfsgo/internal/appinfo"
-	"hfsgo/internal/discovery"
+	"lanchatgo/internal/appinfo"
+	"lanchatgo/internal/discovery"
 )
 
 const (
@@ -68,26 +68,27 @@ type desktopClientState struct {
 }
 
 type desktopClientController struct {
-	mu               sync.RWMutex
-	view             webview.WebView
-	hwnd             uintptr
-	logoDataURL      string
-	configPath       string
-	settings         desktopClientSettings
-	servers          []desktopClientServer
-	scanning         bool
-	status           string
-	trayAdded        bool
-	trayFlashing     bool
-	trayFlashOn      bool
-	trayFlashStop    chan struct{}
-	trayAlertIcon    uintptr
-	trayNotifyUntil  time.Time
-	exiting          bool
-	lastUnread       int
-	promptedUpdates  map[string]struct{}
-	updateInProgress bool
-	cleanupOnce      sync.Once
+	mu                sync.RWMutex
+	view              webview.WebView
+	hwnd              uintptr
+	logoDataURL       string
+	configPath        string
+	settings          desktopClientSettings
+	servers           []desktopClientServer
+	scanning          bool
+	status            string
+	trayAdded         bool
+	trayFlashing      bool
+	trayFlashOn       bool
+	trayFlashStop     chan struct{}
+	trayAlertIcon     uintptr
+	trayNotifyUntil   time.Time
+	exiting           bool
+	lastUnread        int
+	notificationRoute string
+	promptedUpdates   map[string]struct{}
+	updateInProgress  bool
+	cleanupOnce       sync.Once
 }
 
 type flashWindowInfo struct {
@@ -98,11 +99,24 @@ type flashWindowInfo struct {
 	Timeout uint32
 }
 
+type clientNotifyIconIdentifier struct {
+	Size uint32
+	Hwnd uintptr
+	UID  uint32
+	GUID [16]byte
+}
+
+type clientRect struct {
+	Left, Top, Right, Bottom int32
+}
+
 var (
 	clientController      *desktopClientController
 	clientWindowProc      = syscall.NewCallback(desktopClientWndProc)
 	originalClientWndProc uintptr
 	flashWindowEx         = user32.NewProc("FlashWindowEx")
+	clientWindowFromPoint = user32.NewProc("WindowFromPoint")
+	clientNotifyIconRect  = shell32.NewProc("Shell_NotifyIconGetRect")
 )
 
 func RunClient(logo []byte) error {
@@ -180,12 +194,14 @@ func RunClient(logo []byte) error {
 		"clientConnect":       controller.connect,
 		"clientScan":          controller.scan,
 		"clientSetOption":     controller.setOption,
+		"clientCheckUpdate":   controller.checkUpdateNow,
 		"lanchatNotify":       controller.notify,
 		"lanchatUnread":       controller.updateUnread,
-		"lanchatOpenSettings": controller.showLauncher,
+		"lanchatOpenSettings": controller.openPortalSettings,
 		"lanchatCopyText":     controller.copyText,
 		"lanchatCopyImage":    controller.copyImage,
 		"lanchatCopyFile":     controller.copyFile,
+		"lanchatOpenExternal": controller.openExternal,
 	}
 	for name, binding := range bindings {
 		if err = view.Bind(name, binding); err != nil {
@@ -335,6 +351,14 @@ func (c *desktopClientController) copyFile(rawURL, name string) error {
 	return setClipboardFiles(HWND(c.hwnd), []string{path})
 }
 
+func (c *desktopClientController) openExternal(rawURL string) error {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" || parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.New("外部链接地址无效")
+	}
+	return exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", parsed.String()).Start()
+}
+
 const maxClientUpdateBytes = 256 << 20
 
 func (c *desktopClientController) checkServerUpdate(address string) {
@@ -410,6 +434,45 @@ func (c *desktopClientController) checkServerUpdate(address string) {
 		message = utf16("无法完成更新：" + err.Error())
 		messageBox.Call(c.hwnd, uintptr(unsafe.Pointer(&message[0])), uintptr(unsafe.Pointer(&title[0])), 0x10)
 	}
+}
+
+func (c *desktopClientController) checkUpdateNow() (string, error) {
+	c.mu.RLock()
+	address := c.settings.ServerURL
+	c.mu.RUnlock()
+	if address == "" {
+		return "", errors.New("尚未连接服务端")
+	}
+	request, err := http.NewRequest(http.MethodHead, strings.TrimRight(address, "/")+"/", nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("User-Agent", "LanChatGo-Client/"+appinfo.Version)
+	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // #nosec G402 -- LAN servers may use generated self-signed certificates.
+	response, err := (&http.Client{Transport: transport, Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		return "", fmt.Errorf("无法连接服务端检查更新：%w", err)
+	}
+	response.Body.Close()
+	if response.StatusCode >= http.StatusBadRequest {
+		return "", fmt.Errorf("服务端返回状态 %d", response.StatusCode)
+	}
+	version := strings.TrimSpace(response.Header.Get("X-LanChatGo-Version"))
+	if version == "" {
+		return "服务端没有提供版本信息", nil
+	}
+	if compareVersionNumbers(version, appinfo.Version) <= 0 {
+		return "当前已是最新版 v" + appinfo.Version, nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(response.Header.Get("X-LanChatGo-Client-Download")), "true") {
+		return "发现 v" + version + "，但服务端未开启客户端下载", nil
+	}
+	key := strings.TrimRight(address, "/") + "|" + version
+	c.mu.Lock()
+	delete(c.promptedUpdates, key)
+	c.mu.Unlock()
+	go c.checkServerUpdate(address)
+	return "发现新版 v" + version + "，请在更新确认窗口中选择是否安装", nil
 }
 
 func (c *desktopClientController) downloadAndRestart(address, version string) error {
@@ -661,7 +724,7 @@ func setDesktopClientAutoStart(enabled bool) error {
 	return key.SetStringValue("LanChatGoClient", command)
 }
 
-func (c *desktopClientController) notify(title, body, _ string) error {
+func (c *desktopClientController) notify(title, body, route, avatar string, mentioned, private bool) error {
 	c.mu.RLock()
 	enabled, sound := c.settings.Notifications, c.settings.Sound
 	c.mu.RUnlock()
@@ -672,11 +735,44 @@ func (c *desktopClientController) notify(title, body, _ string) error {
 		messageBeep.Call(0x40)
 	}
 	c.flashTaskbar()
-	if !c.isForegroundWindow() {
-		c.showTrayNotification(title, body)
+	showBalloon := private || mentioned || !c.trayIconVisible()
+	if showBalloon {
+		c.mu.Lock()
+		c.notificationRoute = route
+		c.mu.Unlock()
+		c.showTrayNotification(title, body, avatar)
+	} else {
+		c.startTrayFlash()
 	}
-	c.startTrayFlash()
 	return nil
+}
+
+func (c *desktopClientController) trayIconVisible() bool {
+	if c == nil || c.hwnd == 0 {
+		return false
+	}
+	identifier := clientNotifyIconIdentifier{
+		Size: uint32(unsafe.Sizeof(clientNotifyIconIdentifier{})),
+		Hwnd: c.hwnd,
+		UID:  2,
+	}
+	var bounds clientRect
+	result, _, _ := clientNotifyIconRect.Call(
+		uintptr(unsafe.Pointer(&identifier)),
+		uintptr(unsafe.Pointer(&bounds)),
+	)
+	if result != 0 || bounds.Right <= bounds.Left || bounds.Bottom <= bounds.Top {
+		return false
+	}
+	x := bounds.Left + (bounds.Right-bounds.Left)/2
+	y := bounds.Top + (bounds.Bottom-bounds.Top)/2
+	packed := uintptr(uint64(uint32(x)) | uint64(uint32(y))<<32)
+	window, _, _ := clientWindowFromPoint.Call(packed)
+	if window == 0 {
+		return false
+	}
+	visible, _, _ := isWindowVisible.Call(window)
+	return visible != 0
 }
 
 func (c *desktopClientController) updateUnread(total int, _ string) {
@@ -687,7 +783,7 @@ func (c *desktopClientController) updateUnread(total int, _ string) {
 	if increased && total > 0 {
 		c.flashTaskbar()
 	}
-	if total > 0 {
+	if total > 0 && c.trayIconVisible() {
 		c.startTrayFlash()
 	} else {
 		c.stopTrayFlash()
@@ -780,6 +876,17 @@ func (c *desktopClientController) showLauncher() {
 	})
 }
 
+func (c *desktopClientController) openPortalSettings() {
+	if c == nil || c.view == nil {
+		return
+	}
+	c.view.Dispatch(func() {
+		if clientController == c && c.view != nil {
+			c.view.Eval("document.getElementById('portal-settings-button') ? document.getElementById('portal-settings-button').click() : void 0")
+		}
+	})
+}
+
 func (c *desktopClientController) refreshLauncher() {
 	if c == nil || c.view == nil {
 		return
@@ -813,7 +920,7 @@ func (c *desktopClientController) trayData() notifyIconData {
 	return data
 }
 
-func (c *desktopClientController) showTrayNotification(title, body string) {
+func (c *desktopClientController) showTrayNotification(title, body, avatar string) {
 	c.ensureTray()
 	c.mu.Lock()
 	added := c.trayAdded
@@ -831,15 +938,38 @@ func (c *desktopClientController) showTrayNotification(title, body string) {
 		title = "新消息"
 	}
 	data := c.trayData()
-	data = trayNotificationData(data, "LanChatGo · "+title, body, niifUser|niifNoSound|niifLargeIcon, data.Icon)
+	balloonIcon := createClientAvatarIcon(avatar)
+	if balloonIcon == 0 {
+		balloonIcon = data.Icon
+	}
+	if balloonIcon != data.Icon {
+		defer clientDestroyIcon.Call(balloonIcon)
+	}
+	data = trayNotificationData(data, "LanChatGo · "+title, body, niifUser|niifNoSound|niifLargeIcon, balloonIcon)
 	if showNotifyIconNotification(data) {
 		return
 	}
 	if c.readdTray() {
 		data = c.trayData()
-		data = trayNotificationData(data, "LanChatGo · "+title, body, niifUser|niifNoSound|niifLargeIcon, data.Icon)
+		data = trayNotificationData(data, "LanChatGo · "+title, body, niifUser|niifNoSound|niifLargeIcon, balloonIcon)
 		showNotifyIconNotification(data)
 	}
+}
+
+func (c *desktopClientController) openNotificationRoute() {
+	c.mu.Lock()
+	route := c.notificationRoute
+	c.notificationRoute = ""
+	c.mu.Unlock()
+	if route == "" || c.view == nil {
+		return
+	}
+	encoded, _ := json.Marshal(route)
+	c.view.Dispatch(func() {
+		if clientController == c && c.view != nil {
+			c.view.Eval("window.lanchatOpenConversation && window.lanchatOpenConversation(" + string(encoded) + ")")
+		}
+	})
 }
 
 func (c *desktopClientController) readdTray() bool {
@@ -927,7 +1057,7 @@ func (c *desktopClientController) showTrayMenu() {
 		c.restore()
 	case clientTraySettings:
 		c.restore()
-		c.showLauncher()
+		c.openPortalSettings()
 	case clientTrayScan:
 		c.restore()
 		c.showLauncher()
@@ -992,6 +1122,7 @@ func desktopClientWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) 
 		switch trayCallbackEvent(lParam) {
 		case 0x203, 0x405:
 			controller.restore()
+			controller.openNotificationRoute()
 		case 0x205, wmContextMenu:
 			controller.showTrayMenu()
 		}
@@ -1014,7 +1145,7 @@ func renderDesktopClientHTML(logoDataURL string) string {
 :root{font-family:Inter,"Segoe UI","Microsoft YaHei UI",sans-serif;color:#1d2737;background:#f3f5f8}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f3f5f8}.top{height:66px;display:flex;align-items:center;padding:0 26px;border-bottom:1px solid #dfe4ec;background:#fff}.logo{width:42px;height:42px;border-radius:10px}.brand{margin-left:11px;font-size:19px;font-weight:850}.version{margin-left:7px;padding:2px 7px;border-radius:99px;background:#edf3ff;color:#2f6fed;font-size:10px}.sub{margin-top:2px;color:#758196;font-size:10px}.shell{width:min(920px,calc(100% - 30px));margin:22px auto;display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:14px}.card{border:1px solid #dfe4ec;border-radius:13px;background:#fff}.head{padding:18px;border-bottom:1px solid #e7ebf1}.title{font-size:18px;font-weight:820}.note{margin-top:5px;color:#758196;font-size:11px;line-height:1.6}.body{padding:16px}.status{padding:11px 13px;border-radius:9px;background:#edf3ff;color:#3869b4;font-size:11px}.servers{display:grid;gap:8px;margin-top:12px}.server{width:100%;display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px;border:1px solid #dfe5ee;border-radius:10px;background:#fff;text-align:left;cursor:pointer}.server:hover{border-color:#8db5f5;background:#f7faff}.server-icon{width:42px;height:42px;display:grid;place-items:center;border-radius:9px;background:#2f6fed;color:#fff;font-weight:850}.server-name{font-size:13px;font-weight:780}.server-url{margin-top:4px;color:#758196;font-size:10px}.tag{padding:3px 7px;border-radius:99px;background:#eaf8f2;color:#16835d;font-size:9px}.empty{padding:32px 12px;color:#8994a5;text-align:center;font-size:11px}.manual{display:flex;gap:8px;margin-top:13px}.input{min-width:0;flex:1;height:40px;padding:0 11px;border:1px solid #d8e0ea;border-radius:9px;outline:0}.input:focus{border-color:#75a5f4;box-shadow:0 0 0 3px rgba(47,111,237,.1)}button{height:40px;padding:0 13px;border:1px solid #d8e0ea;border-radius:9px;background:#fff;color:#34435a;cursor:pointer}.primary{border-color:#2f6fed;background:#2f6fed;color:#fff;font-weight:750}.side-title{padding:16px 17px;border-bottom:1px solid #e7ebf1;font-size:14px;font-weight:800}.option{display:flex;align-items:center;gap:12px;min-height:62px;padding:10px 16px;border-bottom:1px solid #edf0f4}.option:last-child{border-bottom:0}.copy{min-width:0;flex:1}.option-name{font-size:12px;font-weight:740}.option-note{margin-top:4px;color:#7a8698;font-size:9px;line-height:1.45}.switch{position:relative;width:42px;height:23px}.switch input{position:absolute;opacity:0}.slider{position:absolute;inset:0;border-radius:99px;background:#cbd3de}.slider:after{content:"";position:absolute;left:3px;top:3px;width:17px;height:17px;border-radius:50%;background:#fff;box-shadow:0 2px 5px rgba(0,0,0,.15);transition:.15s}.switch input:checked+.slider{background:#2f6fed}.switch input:checked+.slider:after{transform:translateX(19px)}.tray-note{margin-top:14px;padding:13px;border-radius:10px;background:#fff8e7;color:#80661e;font-size:10px;line-height:1.6}@media(max-width:720px){.shell{grid-template-columns:1fr}.top{padding:0 15px}}</style></head><body>
 <header class="top"><img class="logo" src="{{LOGO}}" alt=""><div><div><span class="brand">LanChatGo 客户端</span><span class="version">v{{VERSION}}</span></div><div class="sub">自动发现局域网服务 · 原生托盘通知</div></div></header>
 <main class="shell"><section class="card"><div class="head"><div class="title">连接服务端</div><div class="note">启动时只发送一次局域网发现广播，不扫描每个 IP 或端口。</div></div><div class="body"><div id="status" class="status">正在发现服务…</div><div id="servers" class="servers"></div><form id="manual" class="manual"><input id="address" class="input" placeholder="例如 http://192.168.1.10 或 https://192.168.1.10"><button class="primary">连接</button><button id="scan" type="button">重新扫描</button></form></div></section>
-<aside><section class="card"><div class="side-title">客户端设置</div><label class="option"><span class="copy"><span class="option-name">开机自动启动</span><span class="option-note">登录 Windows 后自动连接上次或发现到的服务</span></span><span class="switch"><input id="autoStart" type="checkbox"><span class="slider"></span></span></label><label class="option"><span class="copy"><span class="option-name">新消息通知</span><span class="option-note">使用系统托盘通知，不受浏览器通知权限限制</span></span><span class="switch"><input id="notifications" type="checkbox"><span class="slider"></span></span></label><label class="option"><span class="copy"><span class="option-name">通知声音</span><span class="option-note">收到新消息时播放 Windows 提示音</span></span><span class="switch"><input id="sound" type="checkbox"><span class="slider"></span></span></label></section><div class="tray-note">点击窗口 × 会隐藏到托盘，不会退出。右击托盘图标可重新扫描、调整通知或退出客户端。</div></aside></main>
+<aside><section class="card"><div class="side-title">设置</div><label class="option"><span class="copy"><span class="option-name">开机自动启动</span><span class="option-note">登录 Windows 后自动连接上次或发现到的服务</span></span><span class="switch"><input id="autoStart" type="checkbox"><span class="slider"></span></span></label><label class="option"><span class="copy"><span class="option-name">新消息通知</span><span class="option-note">使用系统托盘通知，不受浏览器通知权限限制</span></span><span class="switch"><input id="notifications" type="checkbox"><span class="slider"></span></span></label><label class="option"><span class="copy"><span class="option-name">通知声音</span><span class="option-note">收到新消息时播放 Windows 提示音</span></span><span class="switch"><input id="sound" type="checkbox"><span class="slider"></span></span></label></section><div class="tray-note">点击窗口 × 会隐藏到托盘，不会退出。右击托盘图标可重新扫描、调整通知或退出客户端。</div></aside></main>
 <script>(function(){'use strict';var state=null;function $(id){return document.getElementById(id)}function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}function render(){if(!state)return;$('status').textContent=state.status||'等待操作';$('scan').disabled=!!state.scanning;if(document.activeElement!==$('address'))$('address').value=state.serverUrl||'';['autoStart','notifications','sound'].forEach(function(k){$(k).checked=!!state[k]});var rows=(state.servers||[]).map(function(s){return'<button class="server" type="button" data-url="'+esc(s.url)+'"><span class="server-icon">LC</span><span><span class="server-name">'+esc(s.name||'LanChatGo')+' <small>v'+esc(s.version||'未知')+'</small></span><span class="server-url">'+esc(s.url)+'</span></span><span class="tag">连接</span></button>'}).join('');$('servers').innerHTML=rows||'<div class="empty">暂未发现服务，可手动输入地址。</div>';$('servers').querySelectorAll('.server').forEach(function(b){b.onclick=function(){window.clientConnect(b.dataset.url).catch(alert)}})}async function refresh(){try{state=await window.clientGetState();render()}catch(e){}}window.clientRefresh=refresh;$('manual').onsubmit=function(e){e.preventDefault();window.clientConnect($('address').value).catch(function(e){alert(e.message||e)})};$('scan').onclick=function(){window.clientScan().then(function(s){state=s;render()})};['autoStart','notifications','sound'].forEach(function(k){$(k).onchange=function(){window.clientSetOption(k,$(k).checked).then(function(s){state=s;render()}).catch(function(e){alert(e.message||e);refresh()})}});refresh();setInterval(refresh,1000)})();</script></body></html>`
 	html = strings.ReplaceAll(html, "{{LOGO}}", logoDataURL)
 	html = strings.ReplaceAll(html, "{{VERSION}}", appinfo.Version)

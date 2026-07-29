@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"hfsgo/internal/server"
+	"lanchatgo/internal/server"
 )
 
 func TestChatConversationRTFEmbedsImagesAndEscapesText(t *testing.T) {

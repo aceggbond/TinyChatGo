@@ -105,7 +105,8 @@ func TestChatWidgetRendersAndSelectsWSSForHTTPS(t *testing.T) {
 	}
 	for _, marker := range []string{
 		`id="chat-notify"`,
-		`id="conversation-notify-button"`,
+		`id="chat-record-button"`,
+		`toggleConversationNotify(key)`,
 		`id="attachment-drafts"`,
 		`queueFiles(files)`,
 		`sendDrafts()`,
@@ -120,6 +121,13 @@ func TestChatWidgetRendersAndSelectsWSSForHTTPS(t *testing.T) {
 		`function pageVisible()`,
 		`.message.mine.pending-read .message-meta{color:var(--red)`,
 		`.message.mine.pending-read .bubble{background:var(--blue)`,
+		`id="group-manage-button"`,
+		`text=online?'对方在线':'对方不在线'`,
+		`data-user-ip=`,
+		`window.lanchatOpenExternal`,
+		`type:'renameGroup'`,
+		`type:'addGroupMembers'`,
+		`type:'removeGroupMember'`,
 		`释放后加入待发送列表`,
 	} {
 		if !strings.Contains(body, marker) {
@@ -131,6 +139,9 @@ func TestChatWidgetRendersAndSelectsWSSForHTTPS(t *testing.T) {
 	}
 	if strings.Contains(body, `id="chat-name"`) || strings.Contains(body, `hfs-chat-name`) || strings.Contains(body, `query.set('name'`) {
 		t.Fatal("chat widget still exposes a visitor-name identity")
+	}
+	if strings.Contains(body, `>系统群<`) || strings.Contains(body, `selectedTarget='main'`) {
+		t.Fatal("portal still exposes the removed system group")
 	}
 
 }
@@ -188,6 +199,67 @@ func TestChatRateLimitAllowsNormalBurst(t *testing.T) {
 	}
 }
 
+func TestChatCodeAndServerGeneratedDiceMessages(t *testing.T) {
+	s := New(io.Discard)
+	s.SetGroupChatEnabled(true)
+	s.SetChatEnabled(true)
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+	defer s.SetChatEnabled(false)
+
+	cookie, _ := fetchChatStatus(t, http.DefaultClient, ts.URL, "")
+	conn, response, err := dialChat(
+		ts.URL,
+		cookie,
+		strings.Repeat("d", 32),
+		"",
+		"",
+		ts.URL,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("dial chat: %v (response %#v)", err, response)
+	}
+	defer conn.Close()
+	_ = readChatWire(t, conn)
+
+	const code = "func main() {\n\tprintln(\"LanChatGo\")\n}"
+	if err = conn.WriteJSON(chatClientMessage{
+		Type: "message",
+		Kind: ChatMessageKindCode,
+		Text: code,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wire := readChatWire(t, conn)
+	if wire.Type != "message" || wire.Kind != ChatMessageKindCode || wire.Text != code {
+		t.Fatalf("code message = %#v", wire)
+	}
+
+	if err = conn.WriteJSON(chatClientMessage{
+		Type: "message",
+		Kind: ChatMessageKindDice,
+		Text: "99",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wire = readChatWire(t, conn)
+	if wire.Type != "message" || wire.Kind != ChatMessageKindDice ||
+		len(wire.Text) != 1 || wire.Text[0] < '1' || wire.Text[0] > '6' {
+		t.Fatalf("server-generated dice message = %#v", wire)
+	}
+
+	conversation, ok := s.ChatConversationSnapshot(ChatGroupConversationID)
+	if !ok || len(conversation.Messages) < 2 {
+		t.Fatalf("system group snapshot = %#v, %v", conversation, ok)
+	}
+	messages := conversation.Messages[len(conversation.Messages)-2:]
+	if messages[0].Kind != ChatMessageKindCode || messages[0].Text != code ||
+		messages[1].Kind != ChatMessageKindDice || messages[1].Text != wire.Text {
+		t.Fatalf("persisted special messages = %#v", messages)
+	}
+}
+
 func TestPortalAttachmentContextForwardAndGroupMentions(t *testing.T) {
 	s := New(io.Discard)
 	s.SetChatEnabled(true)
@@ -203,8 +275,8 @@ func TestPortalAttachmentContextForwardAndGroupMentions(t *testing.T) {
 		`id="mention-picker"`,
 		`群聊输入 @ 可选择成员`,
 		`label:'@TA'`,
-		`.message-sender[data-mention-ip],.message-avatar[data-mention-ip]`,
-		`avatarHTML(m.clientId,false,'','message-avatar',mentionIP)`,
+		`data-user-ip`,
+		`avatarHTML(m.clientId,false,'','message-avatar',userIP)`,
 		`fetch('/__hfs/chat/forward'`,
 		`typeof window.lanchatCopyImage==='function'`,
 		`typeof window.lanchatCopyFile==='function'`,

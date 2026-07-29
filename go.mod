@@ -1,4 +1,4 @@
-module hfsgo
+module lanchatgo
 
 go 1.20
 

@@ -1,3 +1,5 @@
+//go:build !client
+
 package gui
 
 import (
@@ -7,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-const settingsFileName = "hfs-go.config"
+const settingsFileName = "lanchatgo.config"
 
 type persistedSettings struct {
 	Password            string `json:"password"`
@@ -35,7 +37,7 @@ func defaultPersistedSettings() persistedSettings {
 		Port:             "80",
 		HTTPSPort:        "443",
 		AllowChat:        true,
-		GroupChat:        true,
+		GroupChat:        false,
 		AllowGroupChat:   true,
 	}
 }
@@ -67,7 +69,7 @@ func savePersistedSettings(filename string, settings persistedSettings) error {
 		return err
 	}
 	dir := filepath.Dir(filename)
-	tmp, err := os.CreateTemp(dir, ".hfs-go.config-*")
+	tmp, err := os.CreateTemp(dir, ".lanchatgo.config-*")
 	if err != nil {
 		return err
 	}

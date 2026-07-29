@@ -20,7 +20,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"hfsgo/internal/appinfo"
+	"lanchatgo/internal/appinfo"
 )
 
 func TestBrowseDownloadAndRange(t *testing.T) {

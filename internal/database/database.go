@@ -17,7 +17,7 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	"hfsgo/internal/server"
+	"lanchatgo/internal/server"
 )
 
 var (
@@ -650,22 +650,8 @@ func (d *DB) ListChatAttachments(query server.ChatArchiveQuery) (server.ChatArch
 			if message.Recalled || message.AttachmentPath == "" {
 				return nil
 			}
-			if query.ViewerIP != "" && !server.ChatConversationVisibleToIP(stored.ConversationID, query.ViewerIP) {
-				if strings.HasPrefix(stored.ConversationID, "group:") {
-					groupID := strings.TrimPrefix(stored.ConversationID, "group:")
-					allowed := false
-					for _, member := range query.GroupMembers[groupID] {
-						if member == query.ViewerIP {
-							allowed = true
-							break
-						}
-					}
-					if !allowed {
-						return nil
-					}
-				} else {
-					return nil
-				}
+			if !chatConversationVisible(stored.ConversationID, query.ViewerIP, query.GroupMembers) {
+				return nil
 			}
 			if conversationID != "" && stored.ConversationID != conversationID {
 				return nil
@@ -740,6 +726,119 @@ func (d *DB) ListChatAttachments(query server.ChatArchiveQuery) (server.ChatArch
 		Items: append([]server.ChatArchiveItem(nil), items[start:end]...),
 		Page:  page, PageSize: pageSize, Total: total, Pages: pages,
 	}, nil
+}
+
+func (d *DB) ListChatMessages(query server.ChatHistoryQuery) (server.ChatHistoryPage, error) {
+	page := query.Page
+	if page < 1 {
+		page = 1
+	}
+	pageSize := query.PageSize
+	if pageSize < 1 {
+		pageSize = 30
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	needle := strings.ToLower(strings.TrimSpace(query.Query))
+	conversationID := strings.TrimSpace(query.ConversationID)
+	items := make([]server.ChatHistoryItem, 0)
+	err := d.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketMessages).ForEach(func(_, value []byte) error {
+			var stored server.StoredChatMessage
+			if err := json.Unmarshal(value, &stored); err != nil {
+				return err
+			}
+			message := stored.Message
+			kind := strings.ToLower(strings.TrimSpace(message.Kind))
+			if message.Recalled || (kind != "" &&
+				kind != server.ChatMessageKindText &&
+				kind != server.ChatMessageKindCode &&
+				kind != server.ChatMessageKindDice) {
+				return nil
+			}
+			if !chatConversationVisible(stored.ConversationID, query.ViewerIP, query.GroupMembers) {
+				return nil
+			}
+			if conversationID != "" && stored.ConversationID != conversationID {
+				return nil
+			}
+			if !query.From.IsZero() && message.SentAt.Before(query.From) {
+				return nil
+			}
+			if !query.To.IsZero() && message.SentAt.After(query.To) {
+				return nil
+			}
+			if needle != "" {
+				haystack := strings.ToLower(strings.Join([]string{
+					message.Text, message.ClientID, message.Name, message.TargetID,
+				}, " "))
+				if !strings.Contains(haystack, needle) {
+					return nil
+				}
+			}
+			items = append(items, server.ChatHistoryItem{
+				MessageID:      message.ID,
+				ConversationID: stored.ConversationID,
+				Kind:           kind,
+				Text:           message.Text,
+				SentAt:         message.SentAt,
+				SenderIP:       message.ClientID,
+				SenderName:     message.Name,
+				TargetID:       message.TargetID,
+				Private:        message.Private,
+			})
+			return nil
+		})
+	})
+	if err != nil {
+		return server.ChatHistoryPage{}, err
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].SentAt.Equal(items[j].SentAt) {
+			return items[i].MessageID > items[j].MessageID
+		}
+		return items[i].SentAt.After(items[j].SentAt)
+	})
+	total := len(items)
+	pages := 0
+	if total > 0 {
+		pages = (total + pageSize - 1) / pageSize
+		if page > pages {
+			page = pages
+		}
+	}
+	start := (page - 1) * pageSize
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return server.ChatHistoryPage{
+		Items: append([]server.ChatHistoryItem(nil), items[start:end]...),
+		Page:  page, PageSize: pageSize, Total: total, Pages: pages,
+	}, nil
+}
+
+func chatConversationVisible(conversationID, viewerIP string, groupMembers map[string][]string) bool {
+	if viewerIP == "" || server.ChatConversationVisibleToIP(conversationID, viewerIP) {
+		return true
+	}
+	if !strings.HasPrefix(conversationID, "group:") {
+		return false
+	}
+	groupID := strings.TrimPrefix(conversationID, "group:")
+	for _, member := range groupMembers[groupID] {
+		if member == viewerIP {
+			return true
+		}
+	}
+	return false
 }
 
 // ChatAttachmentPath resolves one attachment for trusted desktop-only actions.

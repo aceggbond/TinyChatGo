@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"hfsgo/internal/appinfo"
+	"lanchatgo/internal/appinfo"
 )
 
 func TestCompactLogoKeepsModernHTMLBelowWebViewLimit(t *testing.T) {

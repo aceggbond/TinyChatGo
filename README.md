@@ -1,21 +1,23 @@
 # LanChatGo
 
-LanChatGo（原 **hfs-go**）是一个轻量、安全的局域网聊天与文件分享系统。运行 Windows 客户端后，局域网用户通过浏览器访问服务地址即可聊天、发送文件和管理个人资料；桌面端负责服务控制、用户管理和历史归档。
+LanChatGo 是一个完全独立的轻量、安全局域网聊天软件。`LanChatGoServer`（简称 **LCGS**）负责服务控制、用户管理和历史归档；局域网用户可通过浏览器或独立桌面客户端聊天、发送文件和管理个人资料。
 
-[下载 LanChatGo v2.0.3](https://github.com/aceggbond/LanChatGo/releases/tag/v2.0.3) · [Releases](https://github.com/aceggbond/LanChatGo/releases) · [项目地址](https://github.com/aceggbond/LanChatGo)
+[下载 LanChatGo v2.1.0](https://github.com/aceggbond/LanChatGo/releases/tag/v2.1.0) · [Releases](https://github.com/aceggbond/LanChatGo/releases) · [项目地址](https://github.com/aceggbond/LanChatGo)
 
 ## 主要功能
 
-- 基于 WebSocket/WSS 的实时聊天，支持系统群和私信。
+- 基于 WebSocket/WSS 的实时私信与自建群聊，不再创建固定系统群。
 - 支持用户发起私有群聊：创建者选择成员，成员可退出，群主可解散；群聊消息、文件和图片归档彼此隔离。
-- 会话可置顶或取消置顶；系统群固定第一，置顶会话随后显示，其他会话按最新消息自动前移。
+- 会话可置顶或取消置顶；置顶会话优先显示，其他会话按最新消息自动前移。
 - IP 作为用户唯一标识，可设置自己的名称，管理员可修改备注、移除用户或加入黑名单。
 - 支持上传并压缩个人头像，头像与用户资料一起持久化；静音会话会显示头像角标。
 - 群聊支持 `@用户`，右击成员头像、名字或用户列表即可快速插入提醒。
+- 聊天文本自动识别 HTTP/HTTPS 链接；支持保留格式并可一键复制的代码块。
+- 内置 Microsoft Fluent 3D 动态表情资源和骰子小游戏，骰子点数由服务端随机生成。
 - 会话中心与在线用户分组，未读消息数量、闪烁提示、浏览器通知和声音提醒。
 - 提供独立 Windows 客户端：完整复用网页版聊天功能，支持局域网自动发现、手动地址、开机启动、可靠的原生托盘通知和独立声音开关。
 - 客户端关闭窗口后驻留托盘；右击托盘图标可以显示窗口、重新发现服务、调整通知或彻底退出。
-- 私信支持未读/已读状态；只有接收方实际打开对应私信且页面可见时才会标记已读，系统群和群聊不使用已读回执。
+- 私信支持未读/已读状态；只有接收方实际打开对应私信且页面可见时才会标记已读，群聊不使用已读回执。
 - 每个聊天窗口可单独开启或关闭消息提醒，全局浏览器提醒也可以随时关闭。
 - 支持长文本、常用表情以及粘贴或拖拽图片和文件；附件会先进入待发送区，确认发送后才会上传。
 - 图片可放大预览，并支持切换上一张/下一张。
@@ -28,9 +30,9 @@ LanChatGo（原 **hfs-go**）是一个轻量、安全的局域网聊天与文件
 
 ## 界面预览
 
-### Windows 管理端
+### LCGS Windows 服务端
 
-![LanChatGo Windows 管理端](show1.png)
+![LCGS Windows 服务端](show1.png)
 
 ### 浏览器聊天端
 
@@ -38,7 +40,7 @@ LanChatGo（原 **hfs-go**）是一个轻量、安全的局域网聊天与文件
 
 ## 使用
 
-1. 从 [Releases](https://github.com/aceggbond/LanChatGo/releases) 下载并运行 `LanChatGo.exe`。
+1. 从 [Releases](https://github.com/aceggbond/LanChatGo/releases) 下载并运行 `LanChatGoServer.exe`。
 2. 在“设置”中选择监听地址，按需配置 HTTP/HTTPS 端口、访问密码、私信和群聊权限。
 3. 启动服务后，点击管理端显示的蓝色地址复制访问链接，并发送给局域网用户。
 4. 首次进入聊天端时设置自己的名称；文件和图片会自动归档到聊天附件库。
@@ -55,7 +57,7 @@ LanChatGo（原 **hfs-go**）是一个轻量、安全的局域网聊天与文件
 
 ## 数据与安全
 
-- `lanchatgo.db` 不存在时会自动创建；旧版 `hfs-go.db` 会在启动时迁移。
+- `lanchatgo.db` 不存在时会自动创建，配置、用户和消息记录均由 LanChatGo 独立管理。
 - 聊天附件保存在 `chat_files/`，按日期创建子目录。
 - 黑名单 IP 会被拒绝访问、上传、下载和建立聊天连接。
 - HTTPS 证书直接保存到数据库，重新生成会覆盖旧证书，不再生成散落的证书文件。
@@ -66,11 +68,11 @@ LanChatGo（原 **hfs-go**）是一个轻量、安全的局域网聊天与文件
 
 ```powershell
 go test ./...
-go build -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o LanChatGo.exe .
-Copy-Item LanChatGo.exe LanChatGo-Client-windows-amd64.exe
+go build -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o LanChatGoServer.exe .
+go build -tags client -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o LanChatGo-Client-windows-amd64.exe .
 ```
 
-Windows 的服务端和客户端使用同一套代码：文件名包含 `Client` 时自动进入客户端模式，也可使用 `LanChatGo.exe --client` 启动客户端。推送版本标签后，GitHub Actions 会同时生成 `LanChatGo-Client-windows-amd64.exe` 和 `LanChatGo-Client-macos-arm64.zip`。
+Windows 服务端与客户端共享聊天协议和界面资源，但使用独立构建标签：客户端不会携带数据库、归档管理和服务端控制代码。推送版本标签后，GitHub Actions 会生成 `LanChatGoServer.exe`、`LanChatGo-Client-windows-amd64.exe` 和 `LanChatGo-Client-macos-arm64.zip`。
 
 ## 项目与支持
 

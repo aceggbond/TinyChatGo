@@ -115,7 +115,7 @@ func TestChatUserSearchKeyContainsPinyinAndInitials(t *testing.T) {
 	}
 }
 
-func TestPortalNameButtonAndOfflineEmojiPicker(t *testing.T) {
+func TestPortalSettingsAndFluentEmojiPicker(t *testing.T) {
 	s := New(io.Discard)
 	s.SetChatEnabled(true)
 	response := httptest.NewRecorder()
@@ -125,31 +125,40 @@ func TestPortalNameButtonAndOfflineEmojiPicker(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, marker := range []string{
-		`id="chat-name-settings"`,
-		`>设置名字</button>`,
-		`className='emoji-trigger'`,
-		`Unicode · 离线可用`,
-		`textBox.setRangeText(emoji,start,end,'end')`,
-		`var commonEmoji=['😀'`,
-		`var adminTarget='__admin__'`,
-		`<span class="user-name">管理员</span>`,
-		`message.targetId===adminTarget`,
+		`id="portal-settings-button"`,
+		`id="settings-my-info"`,
+		`id="native-settings"`,
+		`id="web-settings"`,
+		`id="native-connect-form"`,
+		`id="native-check-update"`,
+		`$('web-settings').hidden=nativeClient`,
+		`$('native-settings').hidden=!nativeClient`,
+		`id="emoji-picker"`,
+		`Microsoft Fluent 3D 动态表情 · 离线可用`,
+		`textBox.setRangeText(b.dataset.emoji,s,e,'end')`,
+		`var emojis=['😀'`,
+		`/__hfs/fluent-emoji/`,
+		`openNameModal('my',false)`,
+		`id="chat-code-button"`,
+		`id="chat-dice-button"`,
+		`id="code-modal"`,
+		`data-external-url="`,
+		`if(selectedTarget||!selectedGroup)return[]`,
+		`if(key.indexOf('group:')!==0)return false`,
+		`id="group-manage-button"`,
+		`text=online?'对方在线':'对方不在线'`,
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("portal name/emoji controls missing %q", marker)
 		}
 	}
-	nameIndex := strings.Index(body, `id="chat-name-settings"`)
-	statusIndex := strings.Index(body, `id="chat-heading-status"`)
-	if nameIndex < 0 || statusIndex < 0 || nameIndex > statusIndex {
-		t.Fatal("name settings button is not placed before the connection status")
-	}
-	if strings.Contains(body, `myButton.textContent='我的'`) {
-		t.Fatal("legacy composer name button is still present")
+	if strings.Contains(body, `id="my-name-button"`) ||
+		strings.Contains(body, `id="native-client-settings"`) {
+		t.Fatal("legacy standalone client/name button is still rendered")
 	}
 }
 
-func TestPortalChatActionsUseCompactDropdown(t *testing.T) {
+func TestPortalChatRecordsAndContactContextActions(t *testing.T) {
 	s := New(io.Discard)
 	s.SetChatEnabled(true)
 	response := httptest.NewRecorder()
@@ -159,16 +168,46 @@ func TestPortalChatActionsUseCompactDropdown(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, marker := range []string{
-		`id="chat-more-button"`,
-		`id="chat-more-menu"`,
-		`aria-haspopup="menu"`,
-		`setChatMoreOpen(chatMoreMenu.hidden)`,
-		`chatMoreMenu.querySelectorAll('.tool-button')`,
-		`.chat-more-menu[hidden]{display:none}`,
+		`id="chat-record-button"`,
+		`id="history-tab-chat"`,
+		`id="history-tab-file"`,
+		`id="history-tab-image"`,
+		`data-history-kind="text">搜索聊天`,
+		`var contact=event.target.closest&&event.target.closest('.contact-item')`,
+		`label:'设置备注'`,
+		`label:'删除会话'`,
+		`'关闭消息提醒':'开启消息提醒'`,
+		`'取消置顶会话':'置顶会话'`,
+		`hiddenSessions=loadObject('lanchatgo-hidden-sessions')`,
 	} {
 		if !strings.Contains(body, marker) {
-			t.Fatalf("portal chat action dropdown missing %q", marker)
+			t.Fatalf("portal chat records/contact action missing %q", marker)
 		}
+	}
+	if strings.Contains(body, `id="chat-more-button"`) || strings.Contains(body, `id="chat-more-menu"`) {
+		t.Fatal("legacy more menu is still rendered")
+	}
+	groupIndex := strings.Index(body, `id="create-group-button"`)
+	onlineIndex := strings.Index(body, `id="online-count"`)
+	if groupIndex < 0 || onlineIndex < 0 || groupIndex > onlineIndex {
+		t.Fatal("+群聊 is not placed before online count")
+	}
+}
+
+func TestSecureDicePointAlwaysReturnsValidFace(t *testing.T) {
+	seen := make(map[int]bool)
+	for index := 0; index < 256; index++ {
+		point, err := secureDicePoint()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if point < 1 || point > 6 {
+			t.Fatalf("dice point = %d", point)
+		}
+		seen[point] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("dice source did not vary: %#v", seen)
 	}
 }
 
