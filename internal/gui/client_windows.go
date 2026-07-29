@@ -81,6 +81,7 @@ type desktopClientController struct {
 	trayFlashing     bool
 	trayFlashOn      bool
 	trayFlashStop    chan struct{}
+	trayAlertIcon    uintptr
 	exiting          bool
 	lastUnread       int
 	promptedUpdates  map[string]struct{}
@@ -156,6 +157,7 @@ func RunClient(logo []byte) error {
 		configPath:      configPath,
 		settings:        settings,
 		status:          "正在准备局域网自动发现…",
+		trayAlertIcon:   createClientTrayAlertIcon(logo),
 		promptedUpdates: make(map[string]struct{}),
 	}
 	clientController = controller
@@ -727,16 +729,14 @@ func (c *desktopClientController) stopTrayFlash() {
 
 func (c *desktopClientController) setTrayFlashIcon(flashOn bool) {
 	c.mu.RLock()
-	added, exiting := c.trayAdded, c.exiting
+	added, exiting, alertIcon := c.trayAdded, c.exiting, c.trayAlertIcon
 	c.mu.RUnlock()
 	if !added || exiting || c.hwnd == 0 {
 		return
 	}
 	data := c.trayData()
-	if flashOn {
-		if icon, _, _ := loadIcon.Call(0, 32513); icon != 0 {
-			data.Icon = icon
-		}
+	if flashOn && alertIcon != 0 {
+		data.Icon = alertIcon
 	}
 	shellNotify.Call(1, uintptr(unsafe.Pointer(&data)))
 }

@@ -3,10 +3,49 @@
 package gui
 
 import (
+	"encoding/binary"
+	"image"
+	"image/color"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestClientTrayAlertIconKeepsLogoShapeWithoutSystemErrorIcon(t *testing.T) {
+	source := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 2; x++ {
+			source.SetNRGBA(x, y, color.NRGBA{R: 38, G: 128, B: 246, A: 255})
+		}
+	}
+	icon := buildClientTrayAlertIconDIB(source, clientTrayAlertIconSize)
+	wantSize := 40 + clientTrayAlertIconSize*clientTrayAlertIconSize*4 +
+		((clientTrayAlertIconSize+31)/32)*4*clientTrayAlertIconSize
+	if len(icon) != wantSize {
+		t.Fatalf("alert icon size = %d, want %d", len(icon), wantSize)
+	}
+	width, height := binary.LittleEndian.Uint32(icon[4:8]), binary.LittleEndian.Uint32(icon[8:12])
+	if width != 32 || height != 64 {
+		t.Fatalf("alert icon dimensions = %dx%d, want 32x64 DIB", width, height)
+	}
+	blue, green, red, alpha := icon[40], icon[41], icon[42], icon[43]
+	if alpha != 255 || red <= green*2 || red <= blue*2 {
+		t.Fatalf("alert pixel BGRA = %d,%d,%d,%d, want opaque red-tinted logo", blue, green, red, alpha)
+	}
+}
+
+func TestClientTrayAlertIconCanBeCreatedFromProjectLogo(t *testing.T) {
+	logo, err := os.ReadFile(filepath.Join("..", "..", "logo.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	icon := createClientTrayAlertIcon(logo)
+	if icon == 0 {
+		t.Fatal("CreateIconFromResourceEx could not create the red LanChatGo tray icon")
+	}
+	clientDestroyIcon.Call(icon)
+}
 
 func TestNormalizeDesktopClientURL(t *testing.T) {
 	for input, want := range map[string]string{
