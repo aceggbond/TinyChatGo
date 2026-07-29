@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -43,6 +44,9 @@ const (
 	chatMaxUploadFileBytes        = int64(1) << 30
 	chatMaxImageDimension         = 4096
 	chatMaxImagePixels            = 4 * 1024 * 1024
+	chatAvatarSize                = 96
+	chatAvatarMaxBytes            = 48 << 10
+	chatAvatarMaxDataURLBytes     = 72 << 10
 	chatMaxWireBytes              = chatMaxFileBytes*4/3 + 32<<10
 	chatSendQueue                 = 64
 	chatWriteWait                 = 5 * time.Second
@@ -180,6 +184,8 @@ type chatWireMessage struct {
 	Group              bool                     `json:"group"`
 	ClientID           string                   `json:"clientId,omitempty"`
 	Name               string                   `json:"name,omitempty"`
+	Avatar             string                   `json:"avatar,omitempty"`
+	Avatars            map[string]string        `json:"avatars,omitempty"`
 	ID                 string                   `json:"id,omitempty"`
 	Kind               string                   `json:"kind,omitempty"`
 	Sender             string                   `json:"sender,omitempty"`
@@ -215,6 +221,7 @@ type chatClientMessage struct {
 	Type     string   `json:"type"`
 	Kind     string   `json:"kind,omitempty"`
 	Name     string   `json:"name,omitempty"`
+	Avatar   string   `json:"avatar,omitempty"`
 	Text     string   `json:"text,omitempty"`
 	Mime     string   `json:"mime,omitempty"`
 	Data     []byte   `json:"data,omitempty"`
@@ -237,6 +244,35 @@ var chatUpgrader = websocket.Upgrader{
 // concurrent decodes keeps a burst of valid small PNG/JPEG payloads from
 // causing an excessive transient memory spike.
 var chatImageDecodeSlots = make(chan struct{}, 4)
+
+func cleanChatAvatar(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	const prefix = "data:image/jpeg;base64,"
+	if len(raw) > chatAvatarMaxDataURLBytes || !strings.HasPrefix(raw, prefix) {
+		return "", errors.New("头像必须是经过压缩的 JPEG 图片")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(raw, prefix))
+	if err != nil || len(decoded) == 0 {
+		return "", errors.New("头像数据无效")
+	}
+	if len(decoded) > chatAvatarMaxBytes {
+		return "", fmt.Errorf("头像压缩后不能超过 %d KiB", chatAvatarMaxBytes>>10)
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(decoded))
+	if err != nil || format != "jpeg" {
+		return "", errors.New("头像必须是有效的 JPEG 图片")
+	}
+	if config.Width != chatAvatarSize || config.Height != chatAvatarSize {
+		return "", fmt.Errorf("头像尺寸必须是 %d×%d", chatAvatarSize, chatAvatarSize)
+	}
+	if _, _, err = image.Decode(bytes.NewReader(decoded)); err != nil {
+		return "", errors.New("头像图片无法解析")
+	}
+	return prefix + base64.StdEncoding.EncodeToString(decoded), nil
+}
 
 func (s *Server) handleChatAttachmentUpload(w http.ResponseWriter, r *http.Request, clientIP string) {
 	if !s.ChatEnabled() {
@@ -1596,6 +1632,7 @@ func (h *chatHub) register(peer *chatPeer, generation uint64) bool {
 		Name:               displayChatUser(*user),
 		History:            copyChatMessages(history, true),
 		Users:              h.publicUsersLocked(peer.ip),
+		Avatars:            h.publicAvatarsLocked(peer.ip),
 		UserListEnabled:    h.userListEnabled,
 		PrivateEnabled:     h.privateEnabled,
 		DirectHistory:      h.directHistoryForPeerLocked(peer.ip),
@@ -1759,6 +1796,13 @@ func (p *chatPeer) readPump(h *chatHub) {
 				continue
 			}
 			h.updatePeerName(p, name)
+		case "setAvatar":
+			avatar, err := cleanChatAvatar(incoming.Avatar)
+			if err != nil {
+				p.enqueue(chatWireMessage{Type: "error", Text: err.Error()})
+				continue
+			}
+			h.updatePeerAvatar(p, avatar)
 		case "setRemark":
 			name, err := cleanChatName(incoming.Name)
 			if err != nil {
@@ -2476,6 +2520,28 @@ func (h *chatHub) updatePeerName(peer *chatPeer, name string) {
 	persistence := h.persistence
 	label := displayChatUser(copy)
 	_ = peer.enqueue(chatWireMessage{Type: "name", ClientID: peer.ip, Name: label})
+	slow := h.broadcastUserListLocked()
+	h.scheduleNotifyLocked()
+	h.mu.Unlock()
+	if persistence != nil {
+		_ = persistence.SaveChatUser(copy)
+	}
+	shutdownSlowChatPeers(slow)
+}
+
+func (h *chatHub) updatePeerAvatar(peer *chatPeer, avatar string) {
+	h.mu.Lock()
+	if h.peers[peer.id] != peer {
+		h.mu.Unlock()
+		return
+	}
+	user := h.ensureUserLocked(peer.ip, peer.client)
+	user.Avatar = avatar
+	copy := *user
+	persistence := h.persistence
+	_ = peer.enqueue(chatWireMessage{
+		Type: "avatar", ClientID: peer.ip, Avatar: avatar,
+	})
 	slow := h.broadcastUserListLocked()
 	h.scheduleNotifyLocked()
 	h.mu.Unlock()

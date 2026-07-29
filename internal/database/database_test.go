@@ -55,6 +55,7 @@ func TestDatabasePersistsApplicationAndChatData(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	user := server.ChatUser{
 		IP:          "192.0.2.10",
+		Avatar:      "data:image/jpeg;base64,avatar-data",
 		Name:        "王超",
 		Blacklisted: true,
 		FirstSeen:   now,
@@ -114,7 +115,7 @@ func TestDatabasePersistsApplicationAndChatData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(users) != 1 || users[0].Name != "王超" || !users[0].Blacklisted {
+	if len(users) != 1 || users[0].Name != "王超" || users[0].Avatar != user.Avatar || !users[0].Blacklisted {
 		t.Fatalf("restored users = %#v", users)
 	}
 	if len(messages) != 3 {

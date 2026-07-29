@@ -82,6 +82,7 @@ type desktopClientController struct {
 	trayFlashOn      bool
 	trayFlashStop    chan struct{}
 	trayAlertIcon    uintptr
+	trayNotifyUntil  time.Time
 	exiting          bool
 	lastUnread       int
 	promptedUpdates  map[string]struct{}
@@ -671,10 +672,10 @@ func (c *desktopClientController) notify(title, body, _ string) error {
 		messageBeep.Call(0x40)
 	}
 	c.flashTaskbar()
-	c.startTrayFlash()
 	if !c.isForegroundWindow() {
 		c.showTrayNotification(title, body)
 	}
+	c.startTrayFlash()
 	return nil
 }
 
@@ -754,17 +755,17 @@ func (c *desktopClientController) stopTrayFlash() {
 }
 
 func (c *desktopClientController) setTrayFlashIcon(flashOn bool) {
-	c.mu.RLock()
-	added, exiting, alertIcon := c.trayAdded, c.exiting, c.trayAlertIcon
-	c.mu.RUnlock()
-	if !added || exiting || c.hwnd == 0 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	added, exiting, alertIcon, notifyUntil := c.trayAdded, c.exiting, c.trayAlertIcon, c.trayNotifyUntil
+	if !added || exiting || c.hwnd == 0 || time.Now().Before(notifyUntil) {
 		return
 	}
 	data := c.trayData()
 	if flashOn && alertIcon != 0 {
 		data.Icon = alertIcon
 	}
-	shellNotify.Call(1, uintptr(unsafe.Pointer(&data)))
+	shellNotify.Call(nimModify, uintptr(unsafe.Pointer(&data)))
 }
 
 func (c *desktopClientController) showLauncher() {
@@ -797,8 +798,7 @@ func (c *desktopClientController) ensureTray() {
 		return
 	}
 	data := c.trayData()
-	added, _, _ := shellNotify.Call(0, uintptr(unsafe.Pointer(&data)))
-	c.trayAdded = added != 0
+	c.trayAdded = registerNotifyIcon(data)
 }
 
 func (c *desktopClientController) trayData() notifyIconData {
@@ -807,7 +807,7 @@ func (c *desktopClientController) trayData() notifyIconData {
 	if icon == 0 {
 		icon, _, _ = loadIcon.Call(0, 32512)
 	}
-	data := notifyIconData{Hwnd: c.hwnd, UID: 2, Flags: 1 | 2 | 4, Callback: wmTray, Icon: icon}
+	data := notifyIconData{Hwnd: c.hwnd, UID: 2, Flags: nifMessage | nifIcon | nifTip | nifShowTip, Callback: wmTray, Icon: icon}
 	data.Size = uint32(unsafe.Sizeof(data))
 	copyUTF16(data.Tip[:], "LanChatGo 客户端 - 双击显示，右击设置或退出")
 	return data
@@ -815,28 +815,43 @@ func (c *desktopClientController) trayData() notifyIconData {
 
 func (c *desktopClientController) showTrayNotification(title, body string) {
 	c.ensureTray()
-	c.mu.RLock()
+	c.mu.Lock()
 	added := c.trayAdded
-	c.mu.RUnlock()
+	c.trayNotifyUntil = time.Now().Add(3 * time.Second)
+	c.mu.Unlock()
 	if !added {
 		return
 	}
-	data := c.trayData()
-	data.Flags |= 0x10
 	// Use the LanChatGo icon instead of Windows' generic information icon.
 	// Sound is played explicitly by notify so the user's sound preference is
 	// respected without the shell adding a second chime.
-	data.InfoFlags = 4 | 0x10
-	data.BalloonIcon = data.Icon
-	data.Timeout = 10000
 	title = strings.Join(strings.Fields(title), " ")
 	body = strings.Join(strings.Fields(body), " ")
 	if title == "" {
 		title = "新消息"
 	}
-	copyUTF16(data.InfoTitle[:], "LanChatGo · "+title)
-	copyUTF16(data.Info[:], body)
-	shellNotify.Call(1, uintptr(unsafe.Pointer(&data)))
+	data := c.trayData()
+	data = trayNotificationData(data, "LanChatGo · "+title, body, niifUser|niifNoSound|niifLargeIcon, data.Icon)
+	if showNotifyIconNotification(data) {
+		return
+	}
+	if c.readdTray() {
+		data = c.trayData()
+		data = trayNotificationData(data, "LanChatGo · "+title, body, niifUser|niifNoSound|niifLargeIcon, data.Icon)
+		showNotifyIconNotification(data)
+	}
+}
+
+func (c *desktopClientController) readdTray() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.hwnd == 0 || c.exiting {
+		return false
+	}
+	stale := c.trayData()
+	shellNotify.Call(nimDelete, uintptr(unsafe.Pointer(&stale)))
+	c.trayAdded = registerNotifyIcon(c.trayData())
+	return c.trayAdded
 }
 
 func (c *desktopClientController) removeTray() {
@@ -846,7 +861,7 @@ func (c *desktopClientController) removeTray() {
 		return
 	}
 	data := c.trayData()
-	shellNotify.Call(2, uintptr(unsafe.Pointer(&data)))
+	shellNotify.Call(nimDelete, uintptr(unsafe.Pointer(&data)))
 	c.trayAdded = false
 }
 
@@ -974,10 +989,10 @@ func desktopClientWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) 
 		if controller == nil {
 			return 0
 		}
-		switch lParam {
+		switch trayCallbackEvent(lParam) {
 		case 0x203, 0x405:
 			controller.restore()
-		case 0x205:
+		case 0x205, wmContextMenu:
 			controller.showTrayMenu()
 		}
 		return 0

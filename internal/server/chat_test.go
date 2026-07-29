@@ -203,6 +203,8 @@ func TestPortalAttachmentContextForwardAndGroupMentions(t *testing.T) {
 		`id="mention-picker"`,
 		`群聊输入 @ 可选择成员`,
 		`label:'@TA'`,
+		`.message-sender[data-mention-ip],.message-avatar[data-mention-ip]`,
+		`avatarHTML(m.clientId,false,'','message-avatar',mentionIP)`,
 		`fetch('/__hfs/chat/forward'`,
 		`typeof window.lanchatCopyImage==='function'`,
 		`typeof window.lanchatCopyFile==='function'`,

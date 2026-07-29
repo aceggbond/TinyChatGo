@@ -2,7 +2,7 @@
 
 LanChatGo（原 **hfs-go**）是一个轻量、安全的局域网聊天与文件分享系统。运行 Windows 客户端后，局域网用户通过浏览器访问服务地址即可聊天、发送文件和管理个人资料；桌面端负责服务控制、用户管理和历史归档。
 
-[下载 LanChatGo v2.0.2](https://github.com/aceggbond/LanChatGo/releases/tag/v2.0.2) · [Releases](https://github.com/aceggbond/LanChatGo/releases) · [项目地址](https://github.com/aceggbond/LanChatGo)
+[下载 LanChatGo v2.0.3](https://github.com/aceggbond/LanChatGo/releases/tag/v2.0.3) · [Releases](https://github.com/aceggbond/LanChatGo/releases) · [项目地址](https://github.com/aceggbond/LanChatGo)
 
 ## 主要功能
 
@@ -10,8 +10,10 @@ LanChatGo（原 **hfs-go**）是一个轻量、安全的局域网聊天与文件
 - 支持用户发起私有群聊：创建者选择成员，成员可退出，群主可解散；群聊消息、文件和图片归档彼此隔离。
 - 会话可置顶或取消置顶；系统群固定第一，置顶会话随后显示，其他会话按最新消息自动前移。
 - IP 作为用户唯一标识，可设置自己的名称，管理员可修改备注、移除用户或加入黑名单。
+- 支持上传并压缩个人头像，头像与用户资料一起持久化；静音会话会显示头像角标。
+- 群聊支持 `@用户`，右击成员头像、名字或用户列表即可快速插入提醒。
 - 会话中心与在线用户分组，未读消息数量、闪烁提示、浏览器通知和声音提醒。
-- 提供独立 Windows 客户端：完整复用网页版聊天功能，支持局域网自动发现、手动地址、开机启动、原生托盘通知和独立声音开关。
+- 提供独立 Windows 客户端：完整复用网页版聊天功能，支持局域网自动发现、手动地址、开机启动、可靠的原生托盘通知和独立声音开关。
 - 客户端关闭窗口后驻留托盘；右击托盘图标可以显示窗口、重新发现服务、调整通知或彻底退出。
 - 私信支持未读/已读状态；只有接收方实际打开对应私信且页面可见时才会标记已读，系统群和群聊不使用已读回执。
 - 每个聊天窗口可单独开启或关闭消息提醒，全局浏览器提醒也可以随时关闭。

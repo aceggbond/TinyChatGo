@@ -237,6 +237,20 @@ const (
 	bmGetCheck         = 0x00F0
 	bmSetCheck         = 0x00F1
 	vkReturn           = 0x0D
+	nimAdd             = 0
+	nimModify          = 1
+	nimDelete          = 2
+	nimSetVersion      = 4
+	nifMessage         = 0x01
+	nifIcon            = 0x02
+	nifTip             = 0x04
+	nifInfo            = 0x10
+	nifShowTip         = 0x80
+	niifInfo           = 0x01
+	niifUser           = 0x04
+	niifNoSound        = 0x10
+	niifLargeIcon      = 0x20
+	notifyIconVersion4 = 4
 )
 const (
 	idStart      = 1001
@@ -556,9 +570,10 @@ func wndProc(hwnd uintptr, m uint32, w, l uintptr) uintptr {
 		handleVisitorNotifications()
 		return 0
 	case wmTray:
-		if l == 0x203 || l == 0x405 {
+		event := trayCallbackEvent(l)
+		if event == 0x203 || event == 0x405 {
 			restoreFromTray()
-		} else if l == 0x205 {
+		} else if event == 0x205 || event == wmContextMenu {
 			showTrayMenu()
 		}
 		return 0
@@ -1889,7 +1904,7 @@ func trayData() notifyIconData {
 	if icon == 0 {
 		icon, _, _ = loadIcon.Call(0, 32512)
 	}
-	n := notifyIconData{Hwnd: uintptr(app.hwnd), UID: 1, Flags: 1 | 2 | 4, Callback: wmTray, Icon: icon}
+	n := notifyIconData{Hwnd: uintptr(app.hwnd), UID: 1, Flags: nifMessage | nifIcon | nifTip | nifShowTip, Callback: wmTray, Icon: icon}
 	n.Size = uint32(unsafe.Sizeof(n))
 	copyUTF16(n.Tip[:], "LanChatGo - 双击显示，右击打开菜单")
 	return n
@@ -1918,8 +1933,7 @@ func ensureTray() {
 		return
 	}
 	n := trayData()
-	added, _, _ := shellNotify.Call(0, uintptr(unsafe.Pointer(&n)))
-	app.trayAdded = added != 0
+	app.trayAdded = registerNotifyIcon(n)
 }
 
 func showChatNotification(name, summary string) {
@@ -1976,20 +1990,53 @@ func showTrayNotification(title, summary string) {
 	if !app.trayAdded {
 		return
 	}
-	n := trayData()
-	n.Flags |= 0x10
-	n.InfoFlags = 1 | 0x10
-	n.Timeout = 10000
-	copyUTF16(n.InfoTitle[:], title)
-	copyUTF16(n.Info[:], summary)
-	shown, _, _ := shellNotify.Call(1, uintptr(unsafe.Pointer(&n)))
-	if shown == 0 {
-		app.trayAdded = false
-		ensureTray()
-		if app.trayAdded {
-			shellNotify.Call(1, uintptr(unsafe.Pointer(&n)))
-		}
+	n := trayNotificationData(trayData(), title, summary, niifInfo|niifNoSound, 0)
+	if showNotifyIconNotification(n) {
+		return
 	}
+	stale := trayData()
+	shellNotify.Call(nimDelete, uintptr(unsafe.Pointer(&stale)))
+	app.trayAdded = false
+	ensureTray()
+	if app.trayAdded {
+		n = trayNotificationData(trayData(), title, summary, niifInfo|niifNoSound, 0)
+		showNotifyIconNotification(n)
+	}
+}
+
+func registerNotifyIcon(data notifyIconData) bool {
+	added, _, _ := shellNotify.Call(nimAdd, uintptr(unsafe.Pointer(&data)))
+	if added == 0 {
+		return false
+	}
+	version := data
+	version.Timeout = notifyIconVersion4
+	shellNotify.Call(nimSetVersion, uintptr(unsafe.Pointer(&version)))
+	return true
+}
+
+func trayCallbackEvent(lParam uintptr) uintptr {
+	return lParam & 0xffff
+}
+
+func trayNotificationData(base notifyIconData, title, body string, infoFlags uint32, balloonIcon uintptr) notifyIconData {
+	base.Flags |= nifInfo
+	base.InfoFlags = infoFlags
+	base.BalloonIcon = balloonIcon
+	base.Timeout = 10000
+	title = strings.Join(strings.Fields(title), " ")
+	body = strings.Join(strings.Fields(body), " ")
+	if title == "" {
+		title = "LanChatGo"
+	}
+	copyUTF16(base.InfoTitle[:], title)
+	copyUTF16(base.Info[:], body)
+	return base
+}
+
+func showNotifyIconNotification(data notifyIconData) bool {
+	shown, _, _ := shellNotify.Call(nimModify, uintptr(unsafe.Pointer(&data)))
+	return shown != 0
 }
 
 func copyUTF16(destination []uint16, value string) {

@@ -10,6 +10,7 @@ import (
 type ChatUser struct {
 	IP          string         `json:"ip"`
 	Name        string         `json:"name,omitempty"`
+	Avatar      string         `json:"avatar,omitempty"`
 	Blacklisted bool           `json:"blacklisted,omitempty"`
 	FirstSeen   time.Time      `json:"firstSeen"`
 	LastSeen    time.Time      `json:"lastSeen"`
@@ -43,6 +44,7 @@ type ChatPublicUser struct {
 	IP        string `json:"ip"`
 	Name      string `json:"name"`
 	Alias     string `json:"alias,omitempty"`
+	Avatar    string `json:"avatar,omitempty"`
 	Remark    string `json:"remark,omitempty"`
 	SearchKey string `json:"searchKey,omitempty"`
 	Online    bool   `json:"online"`

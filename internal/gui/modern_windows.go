@@ -64,6 +64,7 @@ type modernConversation struct {
 type modernUser struct {
 	IP          string                `json:"ip"`
 	Name        string                `json:"name"`
+	Avatar      string                `json:"avatar,omitempty"`
 	DisplayName string                `json:"displayName"`
 	SearchKey   string                `json:"searchKey"`
 	Online      bool                  `json:"online"`
@@ -796,6 +797,7 @@ func (m *modernController) modernUsers() []modernUser {
 		result = append(result, modernUser{
 			IP:          user.IP,
 			Name:        user.Name,
+			Avatar:      user.Avatar,
 			DisplayName: displayName,
 			SearchKey:   server.ChatUserSearchKey(user.IP, user.Name),
 			Online:      isOnline,

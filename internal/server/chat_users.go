@@ -111,6 +111,11 @@ func (s *Server) SetPersistence(persistence Persistence) error {
 		if user.IP == "" {
 			continue
 		}
+		if avatar, avatarErr := cleanChatAvatar(user.Avatar); avatarErr == nil {
+			user.Avatar = avatar
+		} else {
+			user.Avatar = ""
+		}
 		copy := user
 		s.chat.users[user.IP] = &copy
 		s.chat.conversations[user.IP] = &chatConversationState{
@@ -730,7 +735,7 @@ func (h *chatHub) publicUsersLocked(currentIP string) []ChatPublicUser {
 			return nil
 		}
 		return []ChatPublicUser{{
-			IP: currentIP, Name: displayChatUser(*user), Alias: user.Name,
+			IP: currentIP, Name: displayChatUser(*user), Alias: user.Name, Avatar: user.Avatar,
 			SearchKey: chatUserSearchKey(currentIP, user.Name), Online: true, Me: true,
 		}}
 	}
@@ -749,12 +754,14 @@ func (h *chatHub) publicUsersLocked(currentIP string) []ChatPublicUser {
 			name = displayChatUser(*user)
 		}
 		alias := ""
+		avatar := ""
 		if user != nil {
 			alias = user.Name
+			avatar = user.Avatar
 		}
 		remark := h.remarks[currentIP][ip]
 		items = append(items, ChatPublicUser{
-			IP: ip, Name: name, Alias: alias, Remark: remark,
+			IP: ip, Name: name, Alias: alias, Avatar: avatar, Remark: remark,
 			SearchKey: chatUserSearchKey(ip, strings.TrimSpace(alias+" "+remark)),
 			Online:    true, Me: ip == currentIP,
 		})
@@ -765,6 +772,57 @@ func (h *chatHub) publicUsersLocked(currentIP string) []ChatPublicUser {
 		}
 		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
 	})
+	return items
+}
+
+func (h *chatHub) publicAvatarsLocked(currentIP string) map[string]string {
+	currentIP = normalizeChatIP(currentIP)
+	relevant := make(map[string]struct{})
+	addMessageSenders := func(messages []ChatMessage) {
+		for _, message := range messages {
+			if ip := normalizeChatIP(message.ClientID); ip != "" {
+				relevant[ip] = struct{}{}
+			}
+		}
+	}
+	if conversation := h.conversations[currentIP]; conversation != nil {
+		addMessageSenders(conversation.messages)
+	}
+	if h.groupEnabled && h.group != nil {
+		addMessageSenders(h.group.messages)
+	}
+	for id, conversation := range h.direct {
+		first, second, ok := parseDirectConversationID(id)
+		if !ok || first != currentIP && second != currentIP {
+			continue
+		}
+		relevant[first] = struct{}{}
+		relevant[second] = struct{}{}
+		addMessageSenders(conversation.messages)
+	}
+	for _, group := range h.userGroups {
+		if group == nil || !containsIP(group.Members, currentIP) {
+			continue
+		}
+		for _, member := range group.Members {
+			relevant[normalizeChatIP(member)] = struct{}{}
+		}
+		addMessageSenders(group.messages)
+	}
+	items := make(map[string]string)
+	for ip := range relevant {
+		if ip == "" || ip == currentIP || h.userListEnabled && h.ipOnlineLocked(ip) {
+			continue
+		}
+		user := h.users[ip]
+		if user == nil || user.Blacklisted || strings.TrimSpace(user.Avatar) == "" {
+			continue
+		}
+		items[ip] = user.Avatar
+	}
+	if len(items) == 0 {
+		return nil
+	}
 	return items
 }
 

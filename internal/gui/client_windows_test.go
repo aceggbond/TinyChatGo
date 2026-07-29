@@ -47,6 +47,32 @@ func TestClientTrayAlertIconCanBeCreatedFromProjectLogo(t *testing.T) {
 	clientDestroyIcon.Call(icon)
 }
 
+func TestTrayCallbackEventSupportsNotifyIconVersion4Packing(t *testing.T) {
+	if got := trayCallbackEvent(uintptr(2)<<16 | 0x405); got != 0x405 {
+		t.Fatalf("tray callback event = %#x, want balloon click", got)
+	}
+	if got := trayCallbackEvent(0x205); got != 0x205 {
+		t.Fatalf("legacy tray callback event = %#x, want right click", got)
+	}
+	if got := trayCallbackEvent(uintptr(2)<<16 | wmContextMenu); got != wmContextMenu {
+		t.Fatalf("version 4 context event = %#x, want context menu", got)
+	}
+}
+
+func TestTrayNotificationDataUsesInformationPayload(t *testing.T) {
+	base := notifyIconData{Flags: nifMessage | nifIcon | nifTip, Icon: 42}
+	got := trayNotificationData(base, "  New\r\nmessage  ", "  hello\r\nworld  ", niifUser|niifNoSound, base.Icon)
+	if got.Flags&nifInfo == 0 {
+		t.Fatal("notification data is missing NIF_INFO")
+	}
+	if got.InfoFlags != niifUser|niifNoSound || got.BalloonIcon != 42 {
+		t.Fatalf("notification style = %#x, icon = %d", got.InfoFlags, got.BalloonIcon)
+	}
+	if got.Timeout != 10000 {
+		t.Fatalf("notification timeout = %d, want 10000", got.Timeout)
+	}
+}
+
 func TestNormalizeDesktopClientURL(t *testing.T) {
 	for input, want := range map[string]string{
 		"192.168.1.8":                 "http://192.168.1.8",
