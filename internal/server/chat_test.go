@@ -135,6 +135,86 @@ func TestChatWidgetRendersAndSelectsWSSForHTTPS(t *testing.T) {
 
 }
 
+func TestChatControlFramesDoNotConsumeSendRate(t *testing.T) {
+	s := New(io.Discard)
+	s.SetChatEnabled(true)
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+	defer s.SetChatEnabled(false)
+
+	cookie, _ := fetchChatStatus(t, http.DefaultClient, ts.URL, "")
+	conn, response, err := dialChat(
+		ts.URL,
+		cookie,
+		strings.Repeat("9", 32),
+		"",
+		"",
+		ts.URL,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("dial chat: %v (response %#v)", err, response)
+	}
+	defer conn.Close()
+	_ = readChatWire(t, conn)
+
+	for index := 0; index < chatRateEvents+20; index++ {
+		if err = conn.WriteJSON(chatClientMessage{Type: "view"}); err != nil {
+			t.Fatalf("write view frame %d: %v", index, err)
+		}
+	}
+	if err = conn.WriteJSON(chatClientMessage{Type: "message", Text: "正常消息"}); err != nil {
+		t.Fatal(err)
+	}
+	message := readChatType(t, conn, "message")
+	if message.Text != "正常消息" {
+		t.Fatalf("message after control frames = %#v", message)
+	}
+}
+
+func TestChatRateLimitAllowsNormalBurst(t *testing.T) {
+	if chatRateEvents < 30 {
+		t.Fatalf("chat rate limit is still too strict: %d events per %s", chatRateEvents, chatRateWindow)
+	}
+	for _, eventType := range []string{"view", "read"} {
+		if chatEventCountsTowardsRate(eventType) {
+			t.Fatalf("%s control frame unexpectedly consumes the send allowance", eventType)
+		}
+	}
+	for _, eventType := range []string{"message", "recall", "setName", "createGroup"} {
+		if !chatEventCountsTowardsRate(eventType) {
+			t.Fatalf("%s mutation unexpectedly bypasses the send allowance", eventType)
+		}
+	}
+}
+
+func TestPortalAttachmentContextForwardAndGroupMentions(t *testing.T) {
+	s := New(io.Discard)
+	s.SetChatEnabled(true)
+	s.SetUserListEnabled(true)
+	s.SetPrivateMessagesEnabled(true)
+	response := httptest.NewRecorder()
+	s.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://example.test/", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("portal status = %d", response.Code)
+	}
+	body := response.Body.String()
+	for _, marker := range []string{
+		`id="mention-picker"`,
+		`群聊输入 @ 可选择成员`,
+		`label:'@TA'`,
+		`fetch('/__hfs/chat/forward'`,
+		`typeof window.lanchatCopyImage==='function'`,
+		`typeof window.lanchatCopyFile==='function'`,
+		`needsAttention=!pageVisible()||key!==routeKey()`,
+		`.attachment-name{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("portal attachment/mention feature missing %q", marker)
+		}
+	}
+}
+
 func TestBrandLogoEndpoint(t *testing.T) {
 	s := New(io.Discard)
 	want := []byte{0x89, 'P', 'N', 'G', 13, 10, 26, 10, 1, 2, 3}

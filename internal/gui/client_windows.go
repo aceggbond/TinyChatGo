@@ -182,6 +182,9 @@ func RunClient(logo []byte) error {
 		"lanchatNotify":       controller.notify,
 		"lanchatUnread":       controller.updateUnread,
 		"lanchatOpenSettings": controller.showLauncher,
+		"lanchatCopyText":     controller.copyText,
+		"lanchatCopyImage":    controller.copyImage,
+		"lanchatCopyFile":     controller.copyFile,
 	}
 	for name, binding := range bindings {
 		if err = view.Bind(name, binding); err != nil {
@@ -306,6 +309,29 @@ func (c *desktopClientController) connect(raw string) error {
 	})
 	go c.checkServerUpdate(address)
 	return nil
+}
+
+func (c *desktopClientController) copyText(value string) error {
+	return setClipboardText(HWND(c.hwnd), value)
+}
+
+func (c *desktopClientController) copyImage(dataURL string) error {
+	encoded, err := decodeClipboardDataURL(dataURL)
+	if err != nil {
+		return err
+	}
+	return setClipboardImage(HWND(c.hwnd), encoded)
+}
+
+func (c *desktopClientController) copyFile(rawURL, name string) error {
+	c.mu.RLock()
+	serverURL := c.settings.ServerURL
+	c.mu.RUnlock()
+	path, err := downloadClipboardAttachment(rawURL, name, serverURL)
+	if err != nil {
+		return err
+	}
+	return setClipboardFiles(HWND(c.hwnd), []string{path})
 }
 
 const maxClientUpdateBytes = 256 << 20
@@ -797,10 +823,19 @@ func (c *desktopClientController) showTrayNotification(title, body string) {
 	}
 	data := c.trayData()
 	data.Flags |= 0x10
-	data.InfoFlags = 1 | 0x10
+	// Use the LanChatGo icon instead of Windows' generic information icon.
+	// Sound is played explicitly by notify so the user's sound preference is
+	// respected without the shell adding a second chime.
+	data.InfoFlags = 4 | 0x10
+	data.BalloonIcon = data.Icon
 	data.Timeout = 10000
-	copyUTF16(data.InfoTitle[:], strings.TrimSpace(title))
-	copyUTF16(data.Info[:], strings.TrimSpace(body))
+	title = strings.Join(strings.Fields(title), " ")
+	body = strings.Join(strings.Fields(body), " ")
+	if title == "" {
+		title = "新消息"
+	}
+	copyUTF16(data.InfoTitle[:], "LanChatGo · "+title)
+	copyUTF16(data.Info[:], body)
 	shellNotify.Call(1, uintptr(unsafe.Pointer(&data)))
 }
 

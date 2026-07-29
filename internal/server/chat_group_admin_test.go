@@ -44,3 +44,22 @@ func TestAdministratorManagesUserCreatedGroup(t *testing.T) {
 		t.Fatalf("deleted group remains: %#v", groups)
 	}
 }
+
+func TestPublicGroupIncludesMembersForMentionPicker(t *testing.T) {
+	hub := newChatHub()
+	hub.userGroups["g-mention"] = &chatUserGroupState{ChatGroup: ChatGroup{
+		ID:      "g-mention",
+		Name:    "项目群",
+		OwnerIP: "192.0.2.10",
+		Members: []string{"192.0.2.10", "192.0.2.11"},
+	}}
+	groups := hub.publicGroupsLocked("192.0.2.10")
+	if len(groups) != 1 || len(groups[0].Members) != 2 ||
+		groups[0].Members[0] != "192.0.2.10" || groups[0].Members[1] != "192.0.2.11" {
+		t.Fatalf("public group members = %#v", groups)
+	}
+	groups[0].Members[0] = "changed"
+	if hub.userGroups["g-mention"].Members[0] != "192.0.2.10" {
+		t.Fatal("public group exposed the mutable member slice")
+	}
+}

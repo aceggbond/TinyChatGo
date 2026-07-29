@@ -49,7 +49,8 @@ const (
 	chatPongWait                  = 60 * time.Second
 	chatPingPeriod                = 25 * time.Second
 	chatRateWindow                = 10 * time.Second
-	chatRateEvents                = 12
+	chatRateEvents                = 30
+	chatRateHardEvents            = 300
 	chatCloseDisabled             = 4003
 	chatCloseModeChanged          = 4004
 	chatCloseSessionReplaced      = 4005
@@ -295,6 +296,73 @@ func (s *Server) handleChatAttachmentUpload(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(map[string]bool{"uploaded": true})
+}
+
+type chatAttachmentForwardRequest struct {
+	MessageID string `json:"messageId"`
+	TargetID  string `json:"targetId"`
+}
+
+func (s *Server) handleChatAttachmentForward(w http.ResponseWriter, r *http.Request, clientIP string) {
+	if !s.ChatEnabled() {
+		http.Error(w, "聊天功能未启用", http.StatusForbidden)
+		return
+	}
+	persistence := s.Persistence()
+	if persistence == nil {
+		http.Error(w, "附件持久化服务不可用", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var request chatAttachmentForwardRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(w, "转发请求格式无效", http.StatusBadRequest)
+		return
+	}
+	request.MessageID = strings.TrimSpace(request.MessageID)
+	if request.MessageID == "" {
+		http.Error(w, "缺少要转发的附件", http.StatusBadRequest)
+		return
+	}
+	attachment, err := persistence.OpenChatAttachment(request.MessageID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.Error(w, "附件不存在或已被删除", http.StatusNotFound)
+		} else {
+			http.Error(w, "无法读取要转发的附件", http.StatusInternalServerError)
+		}
+		return
+	}
+	defer attachment.Reader.Close()
+	if !s.chat.conversationVisibleToIP(attachment.ConversationID, clientIP) {
+		http.Error(w, "无权转发此附件", http.StatusForbidden)
+		return
+	}
+	kind, maxBytes := ChatMessageKindFile, int64(chatMaxUploadFileBytes)
+	if attachment.MIME == "image/png" || attachment.MIME == "image/jpeg" {
+		kind, maxBytes = ChatMessageKindImage, int64(chatMaxUploadImageBytes)
+	}
+	if attachment.Size <= 0 || attachment.Size > maxBytes {
+		http.Error(w, "附件大小超过允许范围", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if err = s.chat.receiveHTTPAttachment(
+		clientIP,
+		request.TargetID,
+		attachment.Name,
+		attachment.MIME,
+		kind,
+		attachment.Reader,
+		maxBytes,
+	); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"forwarded": true})
 }
 
 func newChatHub() *chatHub {
@@ -635,6 +703,7 @@ func (h *chatHub) publicGroupsLocked(ip string) []ChatPublicGroup {
 			ID:          group.ID,
 			Name:        group.Name,
 			OwnerIP:     group.OwnerIP,
+			Members:     append([]string(nil), group.Members...),
 			MemberCount: len(group.Members),
 			Joined:      true,
 			Owner:       normalizeChatIP(group.OwnerIP) == normalizeChatIP(ip),
@@ -1605,7 +1674,8 @@ func (p *chatPeer) readPump(h *chatHub) {
 		return p.conn.SetReadDeadline(time.Now().Add(chatPongWait))
 	})
 	windowStarted := time.Now()
-	events := 0
+	events, totalEvents := 0, 0
+	rateWarningSent := false
 	for {
 		messageType, payload, err := p.conn.ReadMessage()
 		if err != nil {
@@ -1617,18 +1687,28 @@ func (p *chatPeer) readPump(h *chatHub) {
 		}
 		now := time.Now()
 		if now.Sub(windowStarted) >= chatRateWindow {
-			windowStarted, events = now, 0
+			windowStarted, events, totalEvents = now, 0, 0
+			rateWarningSent = false
 		}
-		events++
-		if events > chatRateEvents {
-			p.enqueue(chatWireMessage{Type: "error", Text: "发送过于频繁，请稍后再试"})
-			p.shutdown(websocket.ClosePolicyViolation, "rate limit exceeded")
+		totalEvents++
+		if totalEvents > chatRateHardEvents {
+			p.shutdown(websocket.ClosePolicyViolation, "excessive websocket traffic")
 			return
 		}
 		var incoming chatClientMessage
 		if err := json.Unmarshal(payload, &incoming); err != nil {
 			p.enqueue(chatWireMessage{Type: "error", Text: "消息格式无效"})
 			continue
+		}
+		if chatEventCountsTowardsRate(incoming.Type) {
+			events++
+			if events > chatRateEvents {
+				if !rateWarningSent {
+					p.enqueue(chatWireMessage{Type: "error", Text: "发送速度较快，本条消息未发送，请稍后再试"})
+					rateWarningSent = true
+				}
+				continue
+			}
 		}
 		switch incoming.Type {
 		case "message":
@@ -1701,6 +1781,15 @@ func (p *chatPeer) readPump(h *chatHub) {
 		default:
 			p.enqueue(chatWireMessage{Type: "error", Text: "未知的聊天操作"})
 		}
+	}
+}
+
+func chatEventCountsTowardsRate(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "view", "read":
+		return false
+	default:
+		return true
 	}
 }
 

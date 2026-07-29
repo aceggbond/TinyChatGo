@@ -29,12 +29,13 @@ type ChatGroup struct {
 
 // ChatPublicGroup is the browser-safe view of a user-created group.
 type ChatPublicGroup struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	OwnerIP     string `json:"ownerIp"`
-	MemberCount int    `json:"memberCount"`
-	Joined      bool   `json:"joined"`
-	Owner       bool   `json:"owner"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	OwnerIP     string   `json:"ownerIp"`
+	Members     []string `json:"members,omitempty"`
+	MemberCount int      `json:"memberCount"`
+	Joined      bool     `json:"joined"`
+	Owner       bool     `json:"owner"`
 }
 
 // ChatPublicUser is the small, non-sensitive user record sent to browsers.

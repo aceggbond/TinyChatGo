@@ -159,6 +159,38 @@ static void LCGNotify(const char *titleText, const char *bodyText) {
   });
 }
 
+static int LCGCopyText(const char *value) {
+  NSString *text = value ? [NSString stringWithUTF8String:value] : @"";
+  NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+  [pasteboard clearContents];
+  return [pasteboard setString:text forType:NSPasteboardTypeString];
+}
+
+static int LCGCopyImage(const void *bytes, int length) {
+  if (bytes == NULL || length <= 0) {
+    return false;
+  }
+  NSData *data = [NSData dataWithBytes:bytes length:(NSUInteger)length];
+  NSImage *image = [[NSImage alloc] initWithData:data];
+  if (image == nil) {
+    return false;
+  }
+  NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+  [pasteboard clearContents];
+  return [pasteboard writeObjects:@[image]];
+}
+
+static int LCGCopyFile(const char *pathValue) {
+  NSString *path = pathValue ? [NSString stringWithUTF8String:pathValue] : @"";
+  if (path.length == 0) {
+    return false;
+  }
+  NSURL *fileURL = [NSURL fileURLWithPath:path];
+  NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+  [pasteboard clearContents];
+  return [pasteboard writeObjects:@[fileURL]];
+}
+
 static void LCGSetUnread(int total) {
   dispatch_async(dispatch_get_main_queue(), ^{
     if (lcgStatusItem != nil) {
@@ -264,6 +296,9 @@ func RunClient(logo []byte) error {
 		"lanchatNotify":       controller.notify,
 		"lanchatUnread":       controller.updateUnread,
 		"lanchatOpenSettings": controller.showLauncher,
+		"lanchatCopyText":     controller.copyText,
+		"lanchatCopyImage":    controller.copyImage,
+		"lanchatCopyFile":     controller.copyFile,
 	} {
 		if err = view.Bind(name, binding); err != nil {
 			return fmt.Errorf("注册 macOS 客户端操作 %s 失败：%w", name, err)
@@ -325,6 +360,57 @@ func (c *darwinClientController) connect(raw string) error {
 		return fmt.Errorf("保存服务地址失败：%w", err)
 	}
 	c.view.Dispatch(func() { c.view.Navigate(address) })
+	return nil
+}
+
+func (c *darwinClientController) copyText(value string) error {
+	text := C.CString(value)
+	defer C.free(unsafe.Pointer(text))
+	if C.LCGCopyText(text) == 0 {
+		return errors.New("无法复制内容")
+	}
+	return nil
+}
+
+func decodeDarwinClipboardDataURL(value string) ([]byte, error) {
+	comma := strings.IndexByte(value, ',')
+	if comma < 0 || !strings.HasPrefix(value[:comma], "data:image/") ||
+		!strings.Contains(value[:comma], ";base64") {
+		return nil, errors.New("图片数据格式无效")
+	}
+	data, err := base64.StdEncoding.DecodeString(value[comma+1:])
+	if err != nil || len(data) == 0 || len(data) > 100<<20 {
+		return nil, errors.New("图片数据无效或超过 100 MiB")
+	}
+	return data, nil
+}
+
+func (c *darwinClientController) copyImage(dataURL string) error {
+	encoded, err := decodeDarwinClipboardDataURL(dataURL)
+	if err != nil {
+		return err
+	}
+	data := C.CBytes(encoded)
+	defer C.free(data)
+	if C.LCGCopyImage(data, C.int(len(encoded))) == 0 {
+		return errors.New("无法复制图片")
+	}
+	return nil
+}
+
+func (c *darwinClientController) copyFile(rawURL, name string) error {
+	c.mu.RLock()
+	serverURL := c.settings.ServerURL
+	c.mu.RUnlock()
+	path, err := downloadClipboardAttachment(rawURL, name, serverURL)
+	if err != nil {
+		return err
+	}
+	value := C.CString(path)
+	defer C.free(unsafe.Pointer(value))
+	if C.LCGCopyFile(value) == 0 {
+		return errors.New("无法复制文件")
+	}
 	return nil
 }
 

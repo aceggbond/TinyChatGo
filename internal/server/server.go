@@ -808,6 +808,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleChatAttachmentUpload(lw, r, clientIP)
 		return
 	}
+	if r.URL.Path == "/__hfs/chat/forward" {
+		operation = "转发聊天附件"
+		if r.Method != http.MethodPost {
+			http.Error(lw, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !sameWriteOrigin(r) {
+			http.Error(lw, "origin not allowed", http.StatusForbidden)
+			return
+		}
+		s.handleChatAttachmentForward(lw, r, clientIP)
+		return
+	}
 	if r.URL.Path == "/__hfs/chat/ws" {
 		operation = "建立聊天连接"
 		if r.Method != http.MethodGet {
