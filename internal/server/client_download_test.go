@@ -17,6 +17,12 @@ func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
 	recorder := httptest.NewRecorder()
 	s.ServeHTTP(recorder, request)
+	if got := recorder.Header().Get("X-LanChatGo-Version"); got != appinfo.Version {
+		t.Fatalf("server version header = %q, want %q", got, appinfo.Version)
+	}
+	if got := recorder.Header().Get("X-LanChatGo-Client-Download"); got != "false" {
+		t.Fatalf("disabled client-download header = %q", got)
+	}
 	if !strings.Contains(recorder.Body.String(), `id="client-download"`) ||
 		!strings.Contains(recorder.Body.String(), `id="client-download" class="client-download" href="/__hfs/client/download" hidden`) {
 		t.Fatal("disabled client download is not rendered hidden")
@@ -32,6 +38,9 @@ func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
 	s.SetClientDownloadEnabled(true)
 	recorder = httptest.NewRecorder()
 	s.ServeHTTP(recorder, request)
+	if got := recorder.Header().Get("X-LanChatGo-Client-Download"); got != "true" {
+		t.Fatalf("enabled client-download header = %q", got)
+	}
 	body := recorder.Body.String()
 	if strings.Contains(body, `href="/__hfs/client/download" hidden`) {
 		t.Fatal("enabled client download remained hidden")

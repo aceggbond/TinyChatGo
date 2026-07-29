@@ -2,7 +2,7 @@
 
 LanChatGo（原 **hfs-go**）是一个轻量、安全的局域网聊天与文件分享系统。运行 Windows 客户端后，局域网用户通过浏览器访问服务地址即可聊天、发送文件和管理个人资料；桌面端负责服务控制、用户管理和历史归档。
 
-[下载 LanChatGo v2.0](https://github.com/aceggbond/LanChatGo/releases/tag/v2.0) · [Releases](https://github.com/aceggbond/LanChatGo/releases) · [项目地址](https://github.com/aceggbond/LanChatGo)
+[下载 LanChatGo v2.0.1](https://github.com/aceggbond/LanChatGo/releases/tag/v2.0.1) · [Releases](https://github.com/aceggbond/LanChatGo/releases) · [项目地址](https://github.com/aceggbond/LanChatGo)
 
 ## 主要功能
 

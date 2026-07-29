@@ -99,20 +99,23 @@ static void LCGNotify(const char *titleText, const char *bodyText) {
   NSString *title = titleText ? [NSString stringWithUTF8String:titleText] : @"LanChatGo";
   NSString *body = bodyText ? [NSString stringWithUTF8String:bodyText] : @"";
   dispatch_async(dispatch_get_main_queue(), ^{
-    UNMutableNotificationContent *content = [UNMutableNotificationContent new];
-    content.title = title;
-    content.body = body;
-    content.sound = [UNNotificationSound defaultSound];
-    UNNotificationRequest *request =
-        [UNNotificationRequest requestWithIdentifier:[NSUUID UUID].UUIDString
-                                             content:content
-                                             trigger:nil];
-    [[UNUserNotificationCenter currentNotificationCenter]
-        addNotificationRequest:request
-         withCompletionHandler:^(NSError *error) {
-           (void)error;
-         }];
-    [NSApp requestUserAttention:NSCriticalRequest];
+    BOOL foreground = [NSApp isActive] && [NSApp keyWindow] != nil;
+    if (!foreground) {
+      UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+      content.title = title;
+      content.body = body;
+      content.sound = [UNNotificationSound defaultSound];
+      UNNotificationRequest *request =
+          [UNNotificationRequest requestWithIdentifier:[NSUUID UUID].UUIDString
+                                               content:content
+                                               trigger:nil];
+      [[UNUserNotificationCenter currentNotificationCenter]
+          addNotificationRequest:request
+           withCompletionHandler:^(NSError *error) {
+             (void)error;
+           }];
+      [NSApp requestUserAttention:NSCriticalRequest];
+    }
   });
 }
 

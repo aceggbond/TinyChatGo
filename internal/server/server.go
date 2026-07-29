@@ -667,6 +667,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-LanChatGo-Version", appinfo.Version)
 	// Keep the old header for clients that still use it to detect the server.
 	w.Header().Set("X-HFS-Go-Version", appinfo.Version)
+	s.mu.RLock()
+	clientDownloadEnabled := s.allowClientDownload
+	s.mu.RUnlock()
+	w.Header().Set("X-LanChatGo-Client-Download", strconv.FormatBool(clientDownloadEnabled))
 	w.Header().Set("Accept-CH", "Sec-CH-UA, Sec-CH-UA-Platform, Sec-CH-UA-Platform-Version")
 	start := time.Now()
 	status := 200

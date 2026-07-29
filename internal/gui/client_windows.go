@@ -4,12 +4,16 @@ package gui
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -64,22 +68,24 @@ type desktopClientState struct {
 }
 
 type desktopClientController struct {
-	mu            sync.RWMutex
-	view          webview.WebView
-	hwnd          uintptr
-	logoDataURL   string
-	configPath    string
-	settings      desktopClientSettings
-	servers       []desktopClientServer
-	scanning      bool
-	status        string
-	trayAdded     bool
-	trayFlashing  bool
-	trayFlashOn   bool
-	trayFlashStop chan struct{}
-	exiting       bool
-	lastUnread    int
-	cleanupOnce   sync.Once
+	mu               sync.RWMutex
+	view             webview.WebView
+	hwnd             uintptr
+	logoDataURL      string
+	configPath       string
+	settings         desktopClientSettings
+	servers          []desktopClientServer
+	scanning         bool
+	status           string
+	trayAdded        bool
+	trayFlashing     bool
+	trayFlashOn      bool
+	trayFlashStop    chan struct{}
+	exiting          bool
+	lastUnread       int
+	promptedUpdates  map[string]struct{}
+	updateInProgress bool
+	cleanupOnce      sync.Once
 }
 
 type flashWindowInfo struct {
@@ -144,12 +150,13 @@ func RunClient(logo []byte) error {
 	view.SetSize(820, 600, webview.HintMin)
 	window := uintptr(view.Window())
 	controller := &desktopClientController{
-		view:        view,
-		hwnd:        window,
-		logoDataURL: "data:image/png;base64," + base64.StdEncoding.EncodeToString(logo),
-		configPath:  configPath,
-		settings:    settings,
-		status:      "正在准备局域网自动发现…",
+		view:            view,
+		hwnd:            window,
+		logoDataURL:     "data:image/png;base64," + base64.StdEncoding.EncodeToString(logo),
+		configPath:      configPath,
+		settings:        settings,
+		status:          "正在准备局域网自动发现…",
+		promptedUpdates: make(map[string]struct{}),
 	}
 	clientController = controller
 
@@ -182,6 +189,7 @@ func RunClient(logo []byte) error {
 		}
 	}
 	view.SetHtml(renderDesktopClientHTML(controller.logoDataURL))
+	controller.setNativeWindowVisible(true)
 	if err = instance.signalReady(); err != nil {
 		view.Destroy()
 		clientController = nil
@@ -294,7 +302,187 @@ func (c *desktopClientController) connect(raw string) error {
 			c.view.Navigate(address)
 		}
 	})
+	go c.checkServerUpdate(address)
 	return nil
+}
+
+const maxClientUpdateBytes = 256 << 20
+
+func (c *desktopClientController) checkServerUpdate(address string) {
+	request, err := http.NewRequest(http.MethodHead, strings.TrimRight(address, "/")+"/", nil)
+	if err != nil {
+		return
+	}
+	request.Header.Set("User-Agent", "LanChatGo-Client/"+appinfo.Version)
+	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // #nosec G402 -- LAN servers may use the generated self-signed certificate.
+	response, err := (&http.Client{Transport: transport, Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		return
+	}
+	response.Body.Close()
+	if response.StatusCode >= http.StatusBadRequest {
+		return
+	}
+	version := strings.TrimSpace(response.Header.Get("X-LanChatGo-Version"))
+	if version == "" || compareVersionNumbers(version, appinfo.Version) <= 0 {
+		return
+	}
+	download := strings.EqualFold(strings.TrimSpace(response.Header.Get("X-LanChatGo-Client-Download")), "true")
+	if !download {
+		c.mu.RLock()
+		for _, service := range c.servers {
+			if strings.EqualFold(strings.TrimRight(service.URL, "/"), strings.TrimRight(address, "/")) && service.ClientDownload {
+				download = true
+				break
+			}
+		}
+		c.mu.RUnlock()
+	}
+	if !download {
+		return
+	}
+	key := strings.TrimRight(address, "/") + "|" + version
+	c.mu.Lock()
+	if c.updateInProgress {
+		c.mu.Unlock()
+		return
+	}
+	if c.promptedUpdates == nil {
+		c.promptedUpdates = make(map[string]struct{})
+	}
+	if _, alreadyPrompted := c.promptedUpdates[key]; alreadyPrompted {
+		c.mu.Unlock()
+		return
+	}
+	c.promptedUpdates[key] = struct{}{}
+	c.mu.Unlock()
+
+	title := utf16("发现 LanChatGo 客户端更新")
+	message := utf16(fmt.Sprintf(
+		"服务端版本 %s，高于当前客户端 %s。\r\n\r\n是否现在下载并自动重启客户端？",
+		version, appinfo.Version,
+	))
+	result, _, _ := messageBox.Call(
+		c.hwnd,
+		uintptr(unsafe.Pointer(&message[0])),
+		uintptr(unsafe.Pointer(&title[0])),
+		0x44,
+	)
+	if result != 6 {
+		return
+	}
+	if err := c.downloadAndRestart(address, version); err != nil {
+		c.mu.Lock()
+		c.updateInProgress = false
+		c.status = "客户端自动更新失败"
+		c.mu.Unlock()
+		c.refreshLauncher()
+		title = utf16("客户端自动更新失败")
+		message = utf16("无法完成更新：" + err.Error())
+		messageBox.Call(c.hwnd, uintptr(unsafe.Pointer(&message[0])), uintptr(unsafe.Pointer(&title[0])), 0x10)
+	}
+}
+
+func (c *desktopClientController) downloadAndRestart(address, version string) error {
+	c.mu.Lock()
+	if c.updateInProgress {
+		c.mu.Unlock()
+		return errors.New("客户端更新正在进行")
+	}
+	c.updateInProgress = true
+	c.status = "正在下载客户端更新 " + version
+	c.mu.Unlock()
+	c.refreshLauncher()
+
+	requestURL := strings.TrimRight(address, "/") + "/__hfs/client/download"
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("User-Agent", "LanChatGo-Client/"+appinfo.Version)
+	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // #nosec G402 -- LAN servers may use the generated self-signed certificate.
+	response, err := (&http.Client{Transport: transport, Timeout: 3 * time.Minute}).Do(request)
+	if err != nil {
+		return fmt.Errorf("连接更新下载地址失败：%w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("服务端返回状态 %d，可能未开启客户端下载", response.StatusCode)
+	}
+	if response.ContentLength > maxClientUpdateBytes {
+		return errors.New("更新文件超过 256 MiB，已停止下载")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(executable), ".lanchatgo-client-update-*.exe")
+	if err != nil {
+		return fmt.Errorf("创建更新临时文件失败：%w", err)
+	}
+	tempPath := temp.Name()
+	removeTemp := true
+	defer func() {
+		_ = temp.Close()
+		if removeTemp {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	written, err := io.Copy(temp, io.LimitReader(response.Body, maxClientUpdateBytes+1))
+	if err != nil {
+		return fmt.Errorf("下载更新文件失败：%w", err)
+	}
+	if written == 0 || written > maxClientUpdateBytes {
+		return errors.New("更新文件大小无效")
+	}
+	if _, err = temp.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	var signature [2]byte
+	if _, err = io.ReadFull(temp, signature[:]); err != nil || signature != [2]byte{'M', 'Z'} {
+		return errors.New("下载的更新文件不是有效的 Windows 程序")
+	}
+	if err = temp.Close(); err != nil {
+		return err
+	}
+	if err = scheduleDesktopClientRestart(tempPath, executable); err != nil {
+		return fmt.Errorf("启动更新程序失败：%w", err)
+	}
+	removeTemp = false
+	c.exit()
+	return nil
+}
+
+func scheduleDesktopClientRestart(updatePath, executable string) error {
+	script := "$update=$args[0];$target=$args[1];Start-Sleep -Milliseconds 800;Move-Item -LiteralPath $update -Destination $target -Force;Start-Process -FilePath $target -ArgumentList @('--client')"
+	return exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script, updatePath, executable).Start()
+}
+
+func (c *desktopClientController) setNativeWindowVisible(visible bool) {
+	if c == nil || c.view == nil {
+		return
+	}
+	value := "false"
+	if visible {
+		value = "true"
+	}
+	c.view.Dispatch(func() {
+		if clientController == c && c.view != nil {
+			c.view.Eval("window.lanchatSetNativeWindowVisible && window.lanchatSetNativeWindowVisible(" + value + ")")
+		}
+	})
+}
+
+func (c *desktopClientController) isForegroundWindow() bool {
+	if c == nil || c.hwnd == 0 {
+		return false
+	}
+	foreground, _, _ := getForeground.Call()
+	visible, _, _ := isWindowVisible.Call(c.hwnd)
+	minimized, _, _ := isIconic.Call(c.hwnd)
+	return foreground == c.hwnd && visible != 0 && minimized == 0
 }
 
 func normalizeDesktopClientURL(raw string) (string, error) {
@@ -456,7 +644,9 @@ func (c *desktopClientController) notify(title, body, _ string) error {
 	}
 	c.flashTaskbar()
 	c.startTrayFlash()
-	c.showTrayNotification(title, body)
+	if !c.isForegroundWindow() {
+		c.showTrayNotification(title, body)
+	}
 	return nil
 }
 
@@ -629,11 +819,13 @@ func (c *desktopClientController) restore() {
 	showWindow.Call(c.hwnd, 9)
 	setForeground.Call(c.hwnd)
 	setFocus.Call(c.hwnd)
+	c.setNativeWindowVisible(true)
 }
 
 func (c *desktopClientController) hide() {
 	c.ensureTray()
 	showWindow.Call(c.hwnd, 0)
+	c.setNativeWindowVisible(false)
 }
 
 func (c *desktopClientController) exit() {
@@ -732,6 +924,11 @@ func desktopClientWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) 
 		if wParam&0xfff0 == scClose && controller != nil {
 			controller.hide()
 			return 0
+		}
+	case wmSize:
+		if controller != nil {
+			visible, _, _ := isWindowVisible.Call(hwnd)
+			controller.setNativeWindowVisible(wParam != 1 && visible != 0)
 		}
 	case wmClose:
 		if controller != nil {
