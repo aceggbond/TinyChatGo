@@ -117,6 +117,8 @@ type ChatConversation struct {
 // ChatClientInfo is the last observed network and browser information for a
 // visitor. The connection port is the remote TCP source port.
 type ChatClientInfo struct {
+	AccountID   string    `json:"accountId,omitempty"`
+	Username    string    `json:"username,omitempty"`
 	IP          string    `json:"ip"`
 	Port        string    `json:"port"`
 	Browser     string    `json:"browser"`
@@ -166,15 +168,16 @@ type chatUserGroupState struct {
 }
 
 type chatPeer struct {
-	id         string
-	ip         string
-	viewTarget string
-	client     ChatClientInfo
-	conn       *websocket.Conn
-	send       chan chatWireMessage
-	closeReq   chan chatCloseRequest
-	closed     chan struct{}
-	closeOnce  sync.Once
+	id          string
+	ip          string
+	accountName string
+	viewTarget  string
+	client      ChatClientInfo
+	conn        *websocket.Conn
+	send        chan chatWireMessage
+	closeReq    chan chatCloseRequest
+	closed      chan struct{}
+	closeOnce   sync.Once
 }
 
 type chatCloseRequest struct {
@@ -491,7 +494,7 @@ func (s *Server) RenameChatGroup(groupID, rawName string) error {
 // The owner remains protected so a group always has a responsible owner.
 func (s *Server) RemoveChatGroupMember(groupID, memberIP string) error {
 	groupID = strings.TrimSpace(groupID)
-	memberIP = normalizeChatIP(memberIP)
+	memberIP = normalizeChatIdentity(memberIP)
 	if groupID == "" || memberIP == "" {
 		return errors.New("群聊或成员无效")
 	}
@@ -501,7 +504,7 @@ func (s *Server) RemoveChatGroupMember(groupID, memberIP string) error {
 		s.chat.mu.Unlock()
 		return errors.New("群聊不存在")
 	}
-	if normalizeChatIP(group.OwnerIP) == memberIP {
+	if normalizeChatIdentity(group.OwnerIP) == memberIP {
 		s.chat.mu.Unlock()
 		return errors.New("群主不能被剔除，请改为解散群聊")
 	}
@@ -746,7 +749,7 @@ func (h *chatHub) publicGroupsLocked(ip string) []ChatPublicGroup {
 			Members:     append([]string(nil), group.Members...),
 			MemberCount: len(group.Members),
 			Joined:      true,
-			Owner:       normalizeChatIP(group.OwnerIP) == normalizeChatIP(ip),
+			Owner:       normalizeChatIdentity(group.OwnerIP) == normalizeChatIdentity(ip),
 		})
 	}
 	sort.Slice(groups, func(i, j int) bool {
@@ -796,7 +799,7 @@ func (h *chatHub) snapshotConversationLocked(id string, includeImageData bool) (
 			Messages: copyChatMessages(h.group.messages, includeImageData),
 		}, true
 	}
-	id = normalizeChatIP(id)
+	id = normalizeChatIdentity(id)
 	if id == "" {
 		return ChatConversation{}, false
 	}
@@ -871,7 +874,7 @@ func (s *Server) RemoveChatVisitor(id string) bool {
 	if id == "" || id == ChatGroupConversationID {
 		return false
 	}
-	id = normalizeChatIP(id)
+	id = normalizeChatIdentity(id)
 	if id == "" {
 		return false
 	}
@@ -987,7 +990,7 @@ func (s *Server) sendAdminChatMessage(clientID string, message ChatMessage) erro
 	if s.chat.groupEnabled {
 		rawTarget := strings.TrimSpace(clientID)
 		if rawTarget != "" && rawTarget != ChatGroupConversationID {
-			clientID = normalizeChatIP(rawTarget)
+			clientID = normalizeChatIdentity(rawTarget)
 			if clientID == "" {
 				s.chat.mu.Unlock()
 				return errors.New("私信目标 IP 无效")
@@ -1057,7 +1060,7 @@ func (s *Server) sendAdminChatMessage(clientID string, message ChatMessage) erro
 		}
 		return nil
 	}
-	clientID = normalizeChatIP(clientID)
+	clientID = normalizeChatIdentity(clientID)
 	if clientID == "" {
 		s.chat.mu.Unlock()
 		return errors.New("访客 IP 无效")
@@ -1336,6 +1339,15 @@ func clientAddressFromRequest(r *http.Request) (string, string) {
 	return ip, port
 }
 
+func normalizeChatIdentity(raw string) string {
+	if accountID := normalizeAccountID(raw); accountID != "" {
+		return accountID
+	}
+	return normalizeChatIP(raw)
+}
+
+// normalizeChatIP is only for real network address metadata. Chat routing uses
+// normalizeChatIdentity, which accepts registered account IDs.
 func normalizeChatIP(raw string) string {
 	raw = strings.TrimSpace(strings.Trim(raw, "[]"))
 	if zone := strings.LastIndexByte(raw, '%'); zone >= 0 {
@@ -1539,11 +1551,26 @@ func sameChatOrigin(r *http.Request) bool {
 
 // handleChatWebSocket returns the HTTP status used for access logging. It must
 // receive the original ResponseWriter, not statusWriter.
-func (s *Server) handleChatWebSocket(w http.ResponseWriter, r *http.Request, accessVersion uint64) int {
-	sessionID := chatSessionID(r)
-	if sessionID == "" {
-		http.Error(w, "missing chat session", http.StatusUnauthorized)
-		return http.StatusUnauthorized
+func (s *Server) handleChatWebSocket(w http.ResponseWriter, r *http.Request, accessVersion uint64, supplied ...Account) int {
+	var account Account
+	if len(supplied) > 0 {
+		account = supplied[0]
+	} else if current, ok := accountFromContext(r.Context()); ok {
+		account = current
+	}
+	client := clientInfoFromRequest(r)
+	if account.ID == "" {
+		// Compatibility path for direct in-package tests and embedders. HTTP
+		// requests through ServeHTTP always supply an authenticated account.
+		account.ID = client.IP
+	}
+	client.AccountID = account.ID
+	client.Username = account.Username
+	sessionID := account.ID
+	if cookie, err := r.Cookie(accountCookieName); err == nil && cookie.Value != "" {
+		sessionID += ":" + hashSessionToken(cookie.Value)
+	} else if legacy := chatSessionID(r); legacy != "" {
+		sessionID += ":" + legacy
 	}
 	tabID := strings.ToLower(r.URL.Query().Get("tab"))
 	if !validChatToken(tabID) {
@@ -1551,7 +1578,6 @@ func (s *Server) handleChatWebSocket(w http.ResponseWriter, r *http.Request, acc
 		return http.StatusBadRequest
 	}
 	connectionID := deriveChatConnectionID(sessionID, tabID)
-	client := clientInfoFromRequest(r)
 	if client.IP == "" {
 		http.Error(w, "invalid client IP", http.StatusBadRequest)
 		return http.StatusBadRequest
@@ -1582,13 +1608,14 @@ func (s *Server) handleChatWebSocket(w http.ResponseWriter, r *http.Request, acc
 		return http.StatusBadRequest
 	}
 	peer := &chatPeer{
-		id:       connectionID,
-		ip:       client.IP,
-		client:   client,
-		conn:     conn,
-		send:     make(chan chatWireMessage, chatSendQueue),
-		closeReq: make(chan chatCloseRequest, 1),
-		closed:   make(chan struct{}),
+		id:          connectionID,
+		ip:          account.ID,
+		accountName: account.Username,
+		client:      client,
+		conn:        conn,
+		send:        make(chan chatWireMessage, chatSendQueue),
+		closeReq:    make(chan chatCloseRequest, 1),
+		closed:      make(chan struct{}),
 	}
 	go peer.writePump()
 	if !s.chat.register(peer, generation) {
@@ -1604,8 +1631,8 @@ func (s *Server) handleChatWebSocket(w http.ResponseWriter, r *http.Request, acc
 }
 
 // deriveChatConnectionID identifies one browser tab for replacement on
-// reconnect. It is deliberately private; the only visitor identity exposed
-// by chat is the canonical IP address.
+// reconnect. The registered account is the durable chat identity; the token
+// component keeps simultaneous devices and browser profiles independent.
 func deriveChatConnectionID(sessionID, tabID string) string {
 	sum := sha256.Sum256([]byte(sessionID + ":" + tabID))
 	return hex.EncodeToString(sum[:16])
@@ -1618,6 +1645,10 @@ func (h *chatHub) register(peer *chatPeer, generation uint64) bool {
 		return false
 	}
 	user := h.ensureUserLocked(peer.ip, peer.client)
+	user.Username = peer.accountName
+	if strings.TrimSpace(user.Name) == "" {
+		user.Name = peer.accountName
+	}
 	if user.Blacklisted {
 		h.mu.Unlock()
 		return false
@@ -1998,7 +2029,7 @@ func (h *chatHub) leaveUserGroup(peer *chatPeer, groupID string) error {
 		h.mu.Unlock()
 		return errors.New("群聊不存在或你不在群内")
 	}
-	if normalizeChatIP(group.OwnerIP) == normalizeChatIP(peer.ip) {
+	if normalizeChatIdentity(group.OwnerIP) == normalizeChatIdentity(peer.ip) {
 		h.mu.Unlock()
 		return errors.New("群主不能退出，请先解散群聊")
 	}
@@ -2034,7 +2065,7 @@ func (h *chatHub) dissolveUserGroup(peer *chatPeer, groupID string) error {
 		h.mu.Unlock()
 		return errors.New("群聊不存在")
 	}
-	if normalizeChatIP(group.OwnerIP) != normalizeChatIP(peer.ip) {
+	if normalizeChatIdentity(group.OwnerIP) != normalizeChatIdentity(peer.ip) {
 		h.mu.Unlock()
 		return errors.New("只有群主可以解散群聊")
 	}
@@ -2068,7 +2099,7 @@ func (h *chatHub) renameUserGroup(peer *chatPeer, groupID, rawName string) error
 		h.mu.Unlock()
 		return errors.New("群聊不存在")
 	}
-	if normalizeChatIP(group.OwnerIP) != normalizeChatIP(peer.ip) {
+	if normalizeChatIdentity(group.OwnerIP) != normalizeChatIdentity(peer.ip) {
 		h.mu.Unlock()
 		return errors.New("只有群主可以修改群名称")
 	}
@@ -2096,7 +2127,7 @@ func (h *chatHub) addUserGroupMembers(peer *chatPeer, groupID string, members []
 		h.mu.Unlock()
 		return errors.New("群聊不存在")
 	}
-	if normalizeChatIP(group.OwnerIP) != normalizeChatIP(peer.ip) {
+	if normalizeChatIdentity(group.OwnerIP) != normalizeChatIdentity(peer.ip) {
 		h.mu.Unlock()
 		return errors.New("只有群主可以邀请新成员")
 	}
@@ -2132,14 +2163,14 @@ func (h *chatHub) addUserGroupMembers(peer *chatPeer, groupID string, members []
 
 func (h *chatHub) removeUserGroupMember(peer *chatPeer, groupID, rawTarget string) error {
 	groupID = strings.TrimSpace(groupID)
-	target := normalizeChatIP(rawTarget)
+	target := normalizeChatIdentity(rawTarget)
 	h.mu.Lock()
 	group := h.userGroups[groupID]
 	if group == nil {
 		h.mu.Unlock()
 		return errors.New("群聊不存在")
 	}
-	if normalizeChatIP(group.OwnerIP) != normalizeChatIP(peer.ip) {
+	if normalizeChatIdentity(group.OwnerIP) != normalizeChatIdentity(peer.ip) {
 		h.mu.Unlock()
 		return errors.New("只有群主可以移除群成员")
 	}
@@ -2147,7 +2178,7 @@ func (h *chatHub) removeUserGroupMember(peer *chatPeer, groupID, rawTarget strin
 		h.mu.Unlock()
 		return errors.New("群成员不存在")
 	}
-	if target == normalizeChatIP(group.OwnerIP) {
+	if target == normalizeChatIdentity(group.OwnerIP) {
 		h.mu.Unlock()
 		return errors.New("群主不能移除自己")
 	}
@@ -2270,7 +2301,7 @@ func (h *chatHub) peersForGroupLocked(groupID string) []*chatPeer {
 func removeIP(members []string, target string) []string {
 	result := members[:0]
 	for _, member := range members {
-		if normalizeChatIP(member) != normalizeChatIP(target) {
+		if normalizeChatIdentity(member) != normalizeChatIdentity(target) {
 			result = append(result, member)
 		}
 	}
@@ -2362,7 +2393,7 @@ func (h *chatHub) receiveDirectMessage(peer *chatPeer, targetID string, message 
 	if strings.TrimSpace(targetID) == ChatAdminConversationID {
 		return h.receiveAdministratorPrivateMessage(peer, message)
 	}
-	targetID = normalizeChatIP(targetID)
+	targetID = normalizeChatIdentity(targetID)
 	if targetID == "" || targetID == peer.ip {
 		return errors.New("私信目标无效")
 	}
@@ -2430,7 +2461,7 @@ func (h *chatHub) markMessagesRead(peer *chatPeer, rawTargetID string, rawIDs []
 	if len(rawIDs) == 0 {
 		return nil
 	}
-	targetID := normalizeChatIP(rawTargetID)
+	targetID := normalizeChatIdentity(rawTargetID)
 	if targetID == "" || targetID == peer.ip {
 		return nil
 	}
@@ -2472,8 +2503,8 @@ func (h *chatHub) markMessagesRead(peer *chatPeer, rawTargetID string, rawIDs []
 		message := &conversation.messages[index]
 		if _, wanted := requested[message.ID]; !wanted ||
 			!message.Receipt || message.Read ||
-			normalizeChatIP(message.ClientID) != targetID ||
-			normalizeChatIP(message.TargetID) != peer.ip {
+			normalizeChatIdentity(message.ClientID) != targetID ||
+			normalizeChatIdentity(message.TargetID) != peer.ip {
 			continue
 		}
 		matches[message.ID] = append(matches[message.ID], message)
@@ -2522,7 +2553,7 @@ func (h *chatHub) markMessagesRead(peer *chatPeer, rawTargetID string, rawIDs []
 }
 
 func (h *chatHub) updatePeerView(peer *chatPeer, rawTargetID string) {
-	targetID := normalizeChatIP(rawTargetID)
+	targetID := normalizeChatIdentity(rawTargetID)
 	if targetID == peer.ip {
 		targetID = ""
 	}
@@ -2603,7 +2634,7 @@ func (h *chatHub) recallPeerMessage(peer *chatPeer, messageID string) error {
 		h.mu.Unlock()
 		return errors.New("消息已经撤回")
 	}
-	if message.Sender == "admin" || normalizeChatIP(message.ClientID) != peer.ip {
+	if message.Sender == "admin" || normalizeChatIdentity(message.ClientID) != peer.ip {
 		h.mu.Unlock()
 		return errors.New("只能撤回自己发送的消息")
 	}
@@ -2798,7 +2829,7 @@ func (h *chatHub) persistAttachment(conversationID string, message ChatMessage, 
 // receiveHTTPAttachment releases the hub mutex while the body is streamed to
 // disk, then verifies the route is still valid before publishing the message.
 func (h *chatHub) receiveHTTPAttachment(ip, targetID, name, mimeType, kind string, reader io.Reader, maxBytes int64) error {
-	ip = normalizeChatIP(ip)
+	ip = normalizeChatIdentity(ip)
 	targetID = strings.TrimSpace(targetID)
 	groupID := ""
 	if strings.HasPrefix(targetID, chatUserGroupPrefix) {
@@ -2807,7 +2838,7 @@ func (h *chatHub) receiveHTTPAttachment(ip, targetID, name, mimeType, kind strin
 	}
 	adminTarget := targetID == ChatAdminConversationID
 	if !adminTarget {
-		targetID = normalizeChatIP(targetID)
+		targetID = normalizeChatIdentity(targetID)
 	}
 	h.mu.Lock()
 	peers := h.peersForIPLocked(ip)
@@ -2978,7 +3009,7 @@ func (h *chatHub) receiveAdminAttachment(clientID string, message ChatMessage, r
 	targets := h.onlineIPsLocked()
 	targetedPrivate := false
 	if h.groupEnabled && strings.TrimSpace(clientID) != "" && strings.TrimSpace(clientID) != ChatGroupConversationID {
-		clientID = normalizeChatIP(clientID)
+		clientID = normalizeChatIdentity(clientID)
 		if clientID == "" {
 			h.mu.Unlock()
 			return errors.New("私信目标 IP 无效")
@@ -3007,7 +3038,7 @@ func (h *chatHub) receiveAdminAttachment(clientID string, message ChatMessage, r
 		message.TargetID = clientID
 		conversationID, targets, targetedPrivate = adminConversationID(clientID), []string{clientID}, true
 	} else if !h.groupEnabled {
-		clientID = normalizeChatIP(clientID)
+		clientID = normalizeChatIdentity(clientID)
 		if clientID == "" || !h.ipOnlineLocked(clientID) || h.conversations[clientID] == nil {
 			h.mu.Unlock()
 			return errors.New("访客已离线")

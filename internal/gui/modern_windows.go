@@ -62,16 +62,18 @@ type modernConversation struct {
 }
 
 type modernUser struct {
-	IP          string                `json:"ip"`
-	Name        string                `json:"name"`
-	Avatar      string                `json:"avatar,omitempty"`
-	DisplayName string                `json:"displayName"`
-	SearchKey   string                `json:"searchKey"`
-	Online      bool                  `json:"online"`
-	Blacklisted bool                  `json:"blacklisted"`
-	FirstSeen   time.Time             `json:"firstSeen"`
-	LastSeen    time.Time             `json:"lastSeen"`
-	Client      server.ChatClientInfo `json:"client"`
+	IP            string                `json:"ip"`
+	Username      string                `json:"username,omitempty"`
+	AccountStatus server.AccountStatus  `json:"accountStatus,omitempty"`
+	Name          string                `json:"name"`
+	Avatar        string                `json:"avatar,omitempty"`
+	DisplayName   string                `json:"displayName"`
+	SearchKey     string                `json:"searchKey"`
+	Online        bool                  `json:"online"`
+	Blacklisted   bool                  `json:"blacklisted"`
+	FirstSeen     time.Time             `json:"firstSeen"`
+	LastSeen      time.Time             `json:"lastSeen"`
+	Client        server.ChatClientInfo `json:"client"`
 }
 
 type modernState struct {
@@ -207,6 +209,7 @@ func Run(logo, donation []byte) error {
 	if err = srv.SetPersistence(store); err != nil {
 		return fmt.Errorf("读取聊天与用户数据失败：%w", err)
 	}
+	srv.SetAccountApprovalRequired(settings.RequireAccountApproval)
 	srv.SetBrandLogo(logo)
 	tempUploadDir := windowsTemporaryUploadDir()
 	if err = srv.SetFallbackUploadDir(tempUploadDir); err != nil {
@@ -319,6 +322,7 @@ func Run(logo, donation []byte) error {
 		"hfsRemoveVisitor":       controller.removeVisitor,
 		"hfsSetUserName":         controller.setUserName,
 		"hfsSetUserBlacklisted":  controller.setUserBlacklisted,
+		"hfsSetAccountStatus":    controller.setAccountStatus,
 		"hfsRenameGroup":         controller.renameGroup,
 		"hfsRemoveGroupMember":   controller.removeGroupMember,
 		"hfsDeleteGroup":         controller.deleteGroup,
@@ -778,58 +782,69 @@ func (m *modernController) modernConversations() []modernConversation {
 }
 
 func (m *modernController) modernUsers() []modernUser {
-	online := make(map[string]server.ChatClientInfo)
-	for _, client := range m.srv.ChatOnlineClients() {
-		online[client.IP] = client
+	profiles := make(map[string]server.ChatUser)
+	for _, user := range m.srv.ChatUsers() {
+		profiles[user.IP] = user
 	}
-	users := m.srv.ChatUsers()
-	result := make([]modernUser, 0, len(users)+len(online))
-	seen := make(map[string]struct{}, len(users))
-	for _, user := range users {
-		displayName := user.IP
-		if strings.TrimSpace(user.Name) != "" {
-			displayName += "-" + user.Name
-		}
-		client := user.Client
-		currentClient, isOnline := online[user.IP]
-		if isOnline {
-			client = currentClient
+	accounts := m.srv.Accounts()
+	result := make([]modernUser, 0, len(accounts)+len(profiles))
+	seen := make(map[string]struct{}, len(accounts))
+	for _, account := range accounts {
+		user, hasProfile := profiles[account.ID]
+		displayName := account.Username
+		name, avatar, blacklisted := "", "", false
+		firstSeen, lastSeen := account.CreatedAt, account.LastLoginAt
+		client := server.ChatClientInfo{IP: account.LastIP}
+		if hasProfile {
+			name, avatar, blacklisted = user.Name, user.Avatar, user.Blacklisted
+			firstSeen, lastSeen, client = user.FirstSeen, user.LastSeen, user.Client
+			if strings.TrimSpace(name) != "" && !strings.EqualFold(name, account.Username) {
+				displayName += " (" + name + ")"
+			}
 		}
 		result = append(result, modernUser{
-			IP:          user.IP,
-			Name:        user.Name,
-			Avatar:      user.Avatar,
-			DisplayName: displayName,
-			SearchKey:   server.ChatUserSearchKey(user.IP, user.Name),
-			Online:      isOnline,
-			Blacklisted: user.Blacklisted,
-			FirstSeen:   user.FirstSeen,
-			LastSeen:    user.LastSeen,
-			Client:      client,
+			IP: account.ID, Username: account.Username, AccountStatus: account.Status,
+			Name: name, Avatar: avatar, DisplayName: displayName,
+			SearchKey: server.ChatUserSearchKey(account.Username+" "+account.LastIP, name),
+			Online:    m.srv.ChatIdentityOnline(account.ID), Blacklisted: blacklisted,
+			FirstSeen: firstSeen, LastSeen: lastSeen, Client: client,
 		})
-		seen[user.IP] = struct{}{}
+		seen[account.ID] = struct{}{}
 	}
-	for ip, client := range online {
-		if _, exists := seen[ip]; exists {
+	// Keep legacy IP profiles visible so old history can still be inspected
+	// after upgrading, but all new registrations use account identities.
+	for id, user := range profiles {
+		if _, exists := seen[id]; exists {
 			continue
 		}
+		displayName := firstNonEmpty(user.Name, id)
 		result = append(result, modernUser{
-			IP:          ip,
-			DisplayName: ip,
-			SearchKey:   server.ChatUserSearchKey(ip, ""),
-			Online:      true,
-			FirstSeen:   client.ConnectedAt,
-			LastSeen:    client.ConnectedAt,
-			Client:      client,
+			IP: id, Name: user.Name, Avatar: user.Avatar, DisplayName: displayName,
+			SearchKey: server.ChatUserSearchKey(id, user.Name),
+			Online:    m.srv.ChatIdentityOnline(id), Blacklisted: user.Blacklisted,
+			FirstSeen: user.FirstSeen, LastSeen: user.LastSeen, Client: user.Client,
 		})
 	}
 	sort.SliceStable(result, func(i, j int) bool {
+		pendingI := result[i].AccountStatus == server.AccountStatusPending
+		pendingJ := result[j].AccountStatus == server.AccountStatusPending
+		if pendingI != pendingJ {
+			return pendingI
+		}
 		if result[i].Online != result[j].Online {
 			return result[i].Online
 		}
 		return result[i].LastSeen.After(result[j].LastSeen)
 	})
 	return result
+}
+
+func (m *modernController) setAccountStatus(id, status string) (modernState, error) {
+	if err := m.srv.SetAccountStatus(id, server.AccountStatus(strings.TrimSpace(status))); err != nil {
+		return m.getState(), err
+	}
+	modernRefresh()
+	return m.getState(), nil
 }
 
 func (m *modernController) persistentLogs() string {
@@ -843,6 +858,10 @@ func (m *modernController) persistentLogs() string {
 	var builder strings.Builder
 	for _, record := range records {
 		builder.WriteString(record.At.Local().Format("2006/01/02 15:04:05"))
+		if record.Username != "" {
+			builder.WriteString("  账号=")
+			builder.WriteString(record.Username)
+		}
 		builder.WriteString("  IP=")
 		builder.WriteString(record.IP)
 		builder.WriteString("  操作=")
@@ -909,6 +928,7 @@ func (m *modernController) saveSettings(settings persistedSettings) (modernState
 	m.srv.SetUserListEnabled(settings.ShowUserList)
 	m.srv.SetPrivateMessagesEnabled(settings.AllowPrivateChat)
 	m.srv.SetClientDownloadEnabled(settings.AllowClientDownload)
+	m.srv.SetAccountApprovalRequired(settings.RequireAccountApproval)
 	if app != nil {
 		app.notifyNewVisitor = settings.NotifyNewVisitor
 		app.notifyNewMessage = settings.NotifyNewMessage
@@ -988,6 +1008,7 @@ func (m *modernController) toggleServer(host, portText, httpsPortText string) (m
 			m.srv.SetUserGroupCreationEnabled(settings.AllowGroupChat)
 			m.srv.SetUserListEnabled(settings.ShowUserList)
 			m.srv.SetPrivateMessagesEnabled(settings.AllowPrivateChat)
+			m.srv.SetAccountApprovalRequired(settings.RequireAccountApproval)
 			var certificateBundle database.CertificateBundle
 			certFile, keyFile := "", ""
 			if settings.HTTPSPort != "" {
@@ -1550,6 +1571,16 @@ func (m *modernController) clearUsers() (modernState, error) {
 func (m *modernController) removeVisitor(id string) (modernState, error) {
 	if id == server.ChatGroupConversationID {
 		return m.getState(), errors.New("系统群会话不能删除")
+	}
+	for _, account := range m.srv.Accounts() {
+		if account.ID == id {
+			if err := m.srv.DeleteAccount(id); err != nil {
+				return m.getState(), err
+			}
+			_ = m.srv.RemoveChatVisitor(id)
+			modernRefresh()
+			return m.getState(), nil
+		}
 	}
 	if !m.srv.RemoveChatVisitor(id) {
 		return m.getState(), errors.New("访客不存在或已重新连接")

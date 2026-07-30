@@ -102,6 +102,19 @@ func TestModernHTTPSControlsAndBindings(t *testing.T) {
 	}
 }
 
+func TestModernWebAccessPasswordSetting(t *testing.T) {
+	html := renderModernHTML(nil, nil)
+	for _, marker := range []string{
+		`id="web-access-password"`,
+		`password:$('web-access-password').value`,
+		`$('web-access-password').value=s.password||''`,
+	} {
+		if !strings.Contains(html, marker) {
+			t.Fatalf("modern Web access password setting is missing %q", marker)
+		}
+	}
+}
+
 func TestModernImageViewerNativeDropAndAboutPage(t *testing.T) {
 	for _, marker := range []string{
 		`id="image-viewer"`,

@@ -31,7 +31,7 @@ func normalizeGroupMembers(members []string) []string {
 	seen := make(map[string]struct{}, len(members))
 	result := make([]string, 0, len(members))
 	for _, member := range members {
-		member = normalizeChatIP(member)
+		member = normalizeChatIdentity(member)
 		if member == "" {
 			continue
 		}
@@ -46,9 +46,9 @@ func normalizeGroupMembers(members []string) []string {
 }
 
 func containsIP(members []string, ip string) bool {
-	ip = normalizeChatIP(ip)
+	ip = normalizeChatIdentity(ip)
 	for _, member := range members {
-		if normalizeChatIP(member) == ip {
+		if normalizeChatIdentity(member) == ip {
 			return true
 		}
 	}
@@ -65,6 +65,7 @@ func (s *Server) SetPersistence(persistence Persistence) error {
 		s.mu.Lock()
 		s.persistence = nil
 		s.mu.Unlock()
+		s.auth.setPersistence(nil)
 		return nil
 	}
 	users, messages, err := persistence.LoadChatState()
@@ -98,7 +99,7 @@ func (s *Server) SetPersistence(persistence Persistence) error {
 	for _, group := range groups {
 		group.ID = strings.TrimSpace(group.ID)
 		group.Name = strings.TrimSpace(group.Name)
-		group.OwnerIP = normalizeChatIP(group.OwnerIP)
+		group.OwnerIP = normalizeChatIdentity(group.OwnerIP)
 		group.Members = normalizeGroupMembers(group.Members)
 		if group.ID == "" || group.Name == "" || group.OwnerIP == "" || !containsIP(group.Members, group.OwnerIP) {
 			continue
@@ -107,7 +108,7 @@ func (s *Server) SetPersistence(persistence Persistence) error {
 	}
 	for index := range users {
 		user := users[index]
-		user.IP = normalizeChatIP(user.IP)
+		user.IP = normalizeChatIdentity(user.IP)
 		if user.IP == "" {
 			continue
 		}
@@ -126,8 +127,8 @@ func (s *Server) SetPersistence(persistence Persistence) error {
 		}
 	}
 	for _, remark := range remarks {
-		owner := normalizeChatIP(remark.OwnerIP)
-		target := normalizeChatIP(remark.TargetIP)
+		owner := normalizeChatIdentity(remark.OwnerIP)
+		target := normalizeChatIdentity(remark.TargetIP)
 		if owner == "" || target == "" || owner == target || strings.TrimSpace(remark.Name) == "" {
 			continue
 		}
@@ -156,7 +157,7 @@ func (s *Server) SetPersistence(persistence Persistence) error {
 		case stored.ConversationID == ChatGroupConversationID:
 			conversation = s.chat.group
 		case strings.HasPrefix(stored.ConversationID, adminConversationPrefix):
-			ip := normalizeChatIP(strings.TrimPrefix(stored.ConversationID, adminConversationPrefix))
+			ip := normalizeChatIdentity(strings.TrimPrefix(stored.ConversationID, adminConversationPrefix))
 			if ip == "" {
 				continue
 			}
@@ -189,7 +190,7 @@ func (s *Server) SetPersistence(persistence Persistence) error {
 	s.mu.Lock()
 	s.persistence = persistence
 	s.mu.Unlock()
-	return nil
+	return s.auth.setPersistence(persistence)
 }
 
 func (s *Server) Persistence() Persistence {
@@ -264,8 +265,12 @@ func (s *Server) chatIPOnline(ip string) bool {
 	return s.chat.ipOnlineLocked(ip)
 }
 
+func (s *Server) ChatIdentityOnline(id string) bool {
+	return s.chatIPOnline(normalizeChatIdentity(id))
+}
+
 func (s *Server) SetChatUserName(ip, name string) error {
-	ip = normalizeChatIP(ip)
+	ip = normalizeChatIdentity(ip)
 	if ip == "" {
 		return errors.New("用户 IP 无效")
 	}
@@ -274,7 +279,7 @@ func (s *Server) SetChatUserName(ip, name string) error {
 		return err
 	}
 	s.chat.mu.Lock()
-	user := s.chat.ensureUserLocked(ip, ChatClientInfo{IP: ip})
+	user := s.chat.ensureUserLocked(ip, ChatClientInfo{})
 	user.Name = name
 	if conversation := s.chat.conversations[ip]; conversation != nil {
 		conversation.name = displayChatUser(*user)
@@ -294,7 +299,7 @@ func (s *Server) SetChatUserName(ip, name string) error {
 }
 
 func (h *chatHub) updatePeerRemark(peer *chatPeer, targetIP, name string) error {
-	targetIP = normalizeChatIP(targetIP)
+	targetIP = normalizeChatIdentity(targetIP)
 	if targetIP == "" || targetIP == peer.ip {
 		return errors.New("备注目标无效")
 	}
@@ -341,12 +346,12 @@ func (h *chatHub) updatePeerRemark(peer *chatPeer, targetIP, name string) error 
 }
 
 func (s *Server) SetChatUserBlacklisted(ip string, blacklisted bool) error {
-	ip = normalizeChatIP(ip)
+	ip = normalizeChatIdentity(ip)
 	if ip == "" {
 		return errors.New("用户 IP 无效")
 	}
 	s.chat.mu.Lock()
-	user := s.chat.ensureUserLocked(ip, ChatClientInfo{IP: ip})
+	user := s.chat.ensureUserLocked(ip, ChatClientInfo{})
 	user.Blacklisted = blacklisted
 	copy := *user
 	persistence := s.chat.persistence
@@ -375,7 +380,7 @@ func (s *Server) SetChatUserBlacklisted(ip string, blacklisted bool) error {
 }
 
 func (s *Server) ChatUserBlacklisted(ip string) bool {
-	ip = normalizeChatIP(ip)
+	ip = normalizeChatIdentity(ip)
 	if ip == "" {
 		return false
 	}
@@ -386,7 +391,8 @@ func (s *Server) ChatUserBlacklisted(ip string) bool {
 	return blocked
 }
 
-// ObserveChatUser records a successful page visit even when chat is disabled.
+// ObserveChatUser is retained for legacy embedders. New browser requests use
+// ObserveChatAccount so the real network address is metadata, not identity.
 func (s *Server) ObserveChatUser(client ChatClientInfo) bool {
 	client.IP = normalizeChatIP(client.IP)
 	if client.IP == "" {
@@ -405,6 +411,38 @@ func (s *Server) ObserveChatUser(client ChatClientInfo) bool {
 			name:    displayChatUser(copy),
 			client:  client,
 			updated: copy.LastSeen,
+		}
+	}
+	persistence := s.chat.persistence
+	s.chat.scheduleNotifyLocked()
+	s.chat.mu.Unlock()
+	if persistence != nil {
+		_ = persistence.SaveChatUser(copy)
+	}
+	return !existed
+}
+
+func (s *Server) ObserveChatAccount(accountID, username string, client ChatClientInfo) bool {
+	accountID = normalizeChatIdentity(accountID)
+	username = strings.TrimSpace(username)
+	client.IP = normalizeChatIP(client.IP)
+	if accountID == "" || username == "" {
+		return false
+	}
+	s.chat.mu.Lock()
+	_, existed := s.chat.users[accountID]
+	user := s.chat.ensureUserLocked(accountID, client)
+	user.Username = username
+	if strings.TrimSpace(user.Name) == "" {
+		user.Name = username
+	}
+	copy := *user
+	if conversation := s.chat.conversations[accountID]; conversation != nil {
+		conversation.client = client
+		conversation.name = displayChatUser(copy)
+	} else {
+		s.chat.conversations[accountID] = &chatConversationState{
+			id: accountID, name: displayChatUser(copy), client: client, updated: copy.LastSeen,
 		}
 	}
 	persistence := s.chat.persistence
@@ -514,7 +552,7 @@ func (s *Server) serveChatArchive(w http.ResponseWriter, r *http.Request, client
 				return
 			}
 		}
-		target := normalizeChatIP(r.URL.Query().Get("targetId"))
+		target := normalizeChatIdentity(r.URL.Query().Get("targetId"))
 		if conversationID != "" {
 			// A group archive route has already been resolved above.
 		} else if target == "" {
@@ -592,14 +630,14 @@ func (h *chatHub) conversationVisibleToIP(conversationID, ip string) bool {
 }
 
 func chatConversationVisibleToIP(conversationID, ip string) bool {
-	ip = normalizeChatIP(ip)
+	ip = normalizeChatIdentity(ip)
 	switch {
 	case ip == "":
 		return false
 	case conversationID == ChatGroupConversationID:
 		return true
 	case strings.HasPrefix(conversationID, adminConversationPrefix):
-		return normalizeChatIP(strings.TrimPrefix(conversationID, adminConversationPrefix)) == ip
+		return normalizeChatIdentity(strings.TrimPrefix(conversationID, adminConversationPrefix)) == ip
 	case strings.HasPrefix(conversationID, directConversationPrefix):
 		first, second, ok := parseDirectConversationID(conversationID)
 		return ok && (first == ip || second == ip)
@@ -745,7 +783,7 @@ func (h *chatHub) ensureUserLocked(ip string, client ChatClientInfo) *ChatUser {
 	if client.IP != "" {
 		user.Client = client
 	}
-	if user.Client.IP == "" {
+	if user.Client.IP == "" && normalizeAccountID(ip) == "" {
 		user.Client.IP = ip
 	}
 	return user
@@ -758,9 +796,10 @@ func (h *chatHub) publicUsersLocked(currentIP string) []ChatPublicUser {
 			return nil
 		}
 		return []ChatPublicUser{{
-			IP: currentIP, Name: displayChatUser(*user), Alias: user.Name, Avatar: user.Avatar,
+			IP: currentIP, Username: user.Username, Address: user.Client.IP,
+			Name: displayChatUser(*user), Alias: user.Name, Avatar: user.Avatar,
 			Port: user.Client.Port, Browser: user.Client.Browser, OS: user.Client.OS, ClientType: user.Client.ClientType,
-			SearchKey: chatUserSearchKey(currentIP, user.Name), Online: true, Me: true,
+			SearchKey: chatUserSearchKey(currentIP, strings.TrimSpace(user.Username+" "+user.Name)), Online: true, Me: true,
 		}}
 	}
 	online := make(map[string]bool)
@@ -783,11 +822,11 @@ func (h *chatHub) publicUsersLocked(currentIP string) []ChatPublicUser {
 			continue
 		}
 		for _, member := range group.Members {
-			relevant[normalizeChatIP(member)] = true
+			relevant[normalizeChatIdentity(member)] = true
 		}
 	}
 	for ip := range h.remarks[currentIP] {
-		relevant[normalizeChatIP(ip)] = true
+		relevant[normalizeChatIdentity(ip)] = true
 	}
 	items := make([]ChatPublicUser, 0, len(relevant))
 	for ip := range relevant {
@@ -801,18 +840,21 @@ func (h *chatHub) publicUsersLocked(currentIP string) []ChatPublicUser {
 		}
 		alias := ""
 		avatar := ""
+		username := ""
 		if user != nil {
 			alias = user.Name
 			avatar = user.Avatar
+			username = user.Username
 		}
 		remark := h.remarks[currentIP][ip]
-		client := ChatClientInfo{IP: ip}
+		client := ChatClientInfo{}
 		if user != nil {
 			client = user.Client
 		}
 		items = append(items, ChatPublicUser{
-			IP: ip, Port: client.Port, Name: name, Alias: alias, Avatar: avatar, Remark: remark,
-			SearchKey:  chatUserSearchKey(ip, strings.TrimSpace(alias+" "+remark)),
+			IP: ip, Username: username,
+			Address: client.IP, Port: client.Port, Name: name, Alias: alias, Avatar: avatar, Remark: remark,
+			SearchKey:  chatUserSearchKey(ip, strings.TrimSpace(username+" "+alias+" "+remark)),
 			Browser:    client.Browser,
 			OS:         client.OS,
 			ClientType: client.ClientType,
@@ -833,11 +875,11 @@ func (h *chatHub) publicUsersLocked(currentIP string) []ChatPublicUser {
 }
 
 func (h *chatHub) publicAvatarsLocked(currentIP string) map[string]string {
-	currentIP = normalizeChatIP(currentIP)
+	currentIP = normalizeChatIdentity(currentIP)
 	relevant := make(map[string]struct{})
 	addMessageSenders := func(messages []ChatMessage) {
 		for _, message := range messages {
-			if ip := normalizeChatIP(message.ClientID); ip != "" {
+			if ip := normalizeChatIdentity(message.ClientID); ip != "" {
 				relevant[ip] = struct{}{}
 			}
 		}
@@ -862,7 +904,7 @@ func (h *chatHub) publicAvatarsLocked(currentIP string) map[string]string {
 			continue
 		}
 		for _, member := range group.Members {
-			relevant[normalizeChatIP(member)] = struct{}{}
+			relevant[normalizeChatIdentity(member)] = struct{}{}
 		}
 		addMessageSenders(group.messages)
 	}
@@ -884,7 +926,7 @@ func (h *chatHub) publicAvatarsLocked(currentIP string) map[string]string {
 }
 
 func (h *chatHub) remarksForPeerLocked(ip string) map[string]string {
-	source := h.remarks[normalizeChatIP(ip)]
+	source := h.remarks[normalizeChatIdentity(ip)]
 	if len(source) == 0 {
 		return nil
 	}
@@ -973,6 +1015,15 @@ func (h *chatHub) persistUserLocked(user *ChatUser) {
 }
 
 func displayChatUser(user ChatUser) string {
+	if normalizeAccountID(user.IP) != "" {
+		if strings.TrimSpace(user.Name) != "" {
+			return user.Name
+		}
+		if strings.TrimSpace(user.Username) != "" {
+			return user.Username
+		}
+		return "用户"
+	}
 	if strings.TrimSpace(user.Name) == "" {
 		return user.IP
 	}
@@ -996,11 +1047,11 @@ func cleanChatName(raw string) (string, error) {
 }
 
 func adminConversationID(ip string) string {
-	return adminConversationPrefix + normalizeChatIP(ip)
+	return adminConversationPrefix + normalizeChatIdentity(ip)
 }
 
 func directConversationID(first, second string) string {
-	first, second = normalizeChatIP(first), normalizeChatIP(second)
+	first, second = normalizeChatIdentity(first), normalizeChatIdentity(second)
 	if first == "" || second == "" || first == second {
 		return ""
 	}
@@ -1018,7 +1069,7 @@ func parseDirectConversationID(id string) (string, string, bool) {
 	if len(parts) != 2 {
 		return "", "", false
 	}
-	first, second := normalizeChatIP(parts[0]), normalizeChatIP(parts[1])
+	first, second := normalizeChatIdentity(parts[0]), normalizeChatIdentity(parts[1])
 	return first, second, first != "" && second != "" && first != second
 }
 

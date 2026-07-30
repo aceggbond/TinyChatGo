@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"image"
+	"image/color"
+	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
 	"runtime"
@@ -33,19 +35,71 @@ func createClientTrayAlertIcon(logo []byte) uintptr {
 }
 
 func createClientAvatarIcon(dataURL string) uintptr {
-	const prefix = "data:image/jpeg;base64,"
-	if !strings.HasPrefix(dataURL, prefix) {
-		return 0
-	}
-	encoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(dataURL, prefix))
-	if err != nil || len(encoded) == 0 || len(encoded) > 128<<10 {
-		return 0
-	}
-	source, _, err := image.Decode(bytes.NewReader(encoded))
-	if err != nil {
+	source := decodeClientAvatarImage(dataURL)
+	if source == nil {
 		return 0
 	}
 	return createClientIcon(buildClientTrayIconDIB(source, 48, false))
+}
+
+func decodeClientAvatarImage(dataURL string) image.Image {
+	dataURL = strings.TrimSpace(dataURL)
+	comma := strings.IndexByte(dataURL, ',')
+	if comma <= 0 {
+		return nil
+	}
+	header := strings.ToLower(strings.TrimSpace(dataURL[:comma]))
+	if !strings.HasPrefix(header, "data:image/") || !strings.Contains(header, ";base64") {
+		return nil
+	}
+	mimeType := strings.TrimSuffix(strings.TrimPrefix(header, "data:"), ";base64")
+	switch mimeType {
+	case "image/jpeg", "image/jpg", "image/png", "image/gif":
+	default:
+		return nil
+	}
+	encoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(dataURL[comma+1:]))
+	if err != nil || len(encoded) == 0 || len(encoded) > 256<<10 {
+		return nil
+	}
+	source, _, err := image.Decode(bytes.NewReader(encoded))
+	if err != nil {
+		return nil
+	}
+	return source
+}
+
+func createClientDefaultAvatarIcon() uintptr {
+	const size = 48
+	source := image.NewNRGBA(image.Rect(0, 0, size, size))
+	background := color.NRGBA{R: 229, G: 239, B: 255, A: 255}
+	foreground := color.NRGBA{R: 54, G: 119, B: 236, A: 255}
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			source.SetNRGBA(x, y, background)
+		}
+	}
+	for y := 8; y < 26; y++ {
+		for x := 0; x < size; x++ {
+			dx, dy := x-24, y-17
+			if dx*dx+dy*dy <= 9*9 {
+				source.SetNRGBA(x, y, foreground)
+			}
+		}
+	}
+	for y := 27; y < 44; y++ {
+		halfWidth := 8 + (y-27)*9/16
+		for x := 24 - halfWidth; x <= 24+halfWidth; x++ {
+			if x >= 0 && x < size {
+				source.SetNRGBA(x, y, foreground)
+			}
+		}
+	}
+	iconBits := buildClientTrayIconDIB(source, size, false)
+	if len(iconBits) == 0 {
+		return 0
+	}
+	return createClientIcon(iconBits)
 }
 
 func createClientIcon(iconBits []byte) uintptr {

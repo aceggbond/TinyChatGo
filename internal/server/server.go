@@ -57,6 +57,7 @@ type Server struct {
 	runCancel           context.CancelFunc
 	logger              *log.Logger
 	password            string
+	accessToken         string
 	accessVersion       uint64
 	allowUpload         bool
 	allowDownload       bool
@@ -68,6 +69,7 @@ type Server struct {
 	shareChangeNotify   func()
 	brandLogo           []byte
 	chat                *chatHub
+	auth                *accountManager
 	persistence         Persistence
 	visitorMu           sync.Mutex
 	visitorSeen         map[string]time.Time
@@ -77,28 +79,46 @@ type Server struct {
 func New(logWriter io.Writer) *Server {
 	logger := log.New(logWriter, "", log.LstdFlags)
 	chat := newChatHub()
+	accessToken, _ := newOpaqueToken(32)
 	result := &Server{
 		logger:           logger,
+		accessToken:      accessToken,
 		allowDownload:    true,
 		handlerAccepting: true,
 		chat:             chat,
+		auth:             newAccountManager(),
 		visitorSeen:      make(map[string]time.Time),
 	}
-	chat.logOperation = func(ip, operation string) {
+	chat.logOperation = func(identity, operation string) {
 		at := time.Now().UTC()
-		logger.Printf("IP=%s 操作=%s", ip, operation)
+		actualIP, username := identity, ""
+		if normalizeAccountID(identity) != "" {
+			result.auth.mu.RLock()
+			if account := result.auth.accounts[identity]; account != nil {
+				actualIP, username = account.LastIP, account.Username
+			}
+			result.auth.mu.RUnlock()
+			result.chat.mu.RLock()
+			if user := result.chat.users[identity]; user != nil && user.Client.IP != "" {
+				actualIP = user.Client.IP
+			}
+			result.chat.mu.RUnlock()
+		}
+		logger.Printf("账号=%s IP=%s 操作=%s", username, actualIP, operation)
 		result.mu.RLock()
 		persistence := result.persistence
 		result.mu.RUnlock()
 		if persistence != nil {
-			_ = persistence.SaveAccessRecord(AccessRecord{At: at, IP: ip, Operation: operation})
+			_ = persistence.SaveAccessRecord(AccessRecord{
+				At: at, IP: actualIP, AccountID: identity, Username: username, Operation: operation,
+			})
 		}
 	}
 	return result
 }
 
 // SetVisitorNotifier installs a callback for the first successful HTML page
-// visit from each IP address during the current server run.
+// visit from each account during the current server run.
 func (s *Server) SetVisitorNotifier(notify func(ChatClientInfo)) {
 	s.visitorMu.Lock()
 	s.visitorNotify = notify
@@ -110,6 +130,7 @@ func (s *Server) SetAccess(password string, upload, download, manage bool) {
 	passwordChanged := s.password != password
 	if passwordChanged {
 		s.accessVersion++
+		s.accessToken, _ = newOpaqueToken(32)
 	}
 	s.password, s.allowUpload, s.allowDownload, s.allowManage = password, upload, download, manage
 	s.mu.Unlock()
@@ -676,6 +697,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	status := 200
 	operation := requestOperation(r)
 	clientIP, _ := clientAddressFromRequest(r)
+	var requestAccount Account
 	if clientIP == "" {
 		clientIP = "未知"
 	}
@@ -700,6 +722,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_ = persistence.SaveAccessRecord(AccessRecord{
 				At:        start.UTC(),
 				IP:        clientIP,
+				AccountID: requestAccount.ID,
+				Username:  requestAccount.Username,
 				Operation: operation,
 				Method:    r.Method,
 				Path:      r.URL.Path,
@@ -708,12 +732,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}()
-	if s.ChatUserBlacklisted(clientIP) {
-		operation = "黑名单拒绝访问"
-		status = http.StatusForbidden
-		http.Error(lw, "此 IP 已被管理员加入黑名单", http.StatusForbidden)
-		return
-	}
 	s.mu.RLock()
 	password, accessVersion, upload, download, manage, fallbackUploadDir := s.password, s.accessVersion, s.allowUpload, s.allowDownload, s.allowManage, s.fallbackUploadDir
 	redirectHTTP, redirectHTTPHost := s.redirectHTTP, s.redirectHTTPHost
@@ -728,15 +746,59 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(lw, r, target.String(), http.StatusTemporaryRedirect)
 		return
 	}
-	if password != "" {
-		_, pass, ok := r.BasicAuth()
-		if !ok || pass != password {
-			w.Header().Set("WWW-Authenticate", `Basic realm="LanChatGo"`)
-			http.Error(lw, "需要访问密码", http.StatusUnauthorized)
+	if r.URL.Path == "/__auth/access" {
+		operation = "Web access"
+		s.serveWebAccessAPI(lw, r)
+		return
+	}
+	// The logo is needed to draw the password page itself. All other portal,
+	// account, chat, file, and updater requests pass through the gate first.
+	if r.URL.Path != "/__hfs/logo.png" && s.webAccessRequired(r) {
+		operation = "Web access"
+		status = http.StatusUnauthorized
+		if r.URL.Path == "/" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			s.renderWebAccessPage(lw, r)
+		} else if strings.HasPrefix(r.URL.Path, "/__auth/") || strings.HasPrefix(r.URL.Path, "/__hfs/") {
+			writeAuthJSON(lw, http.StatusUnauthorized, map[string]any{
+				"ok": false, "accessRequired": true, "message": "请先输入 Web 访问密码",
+			})
+		} else {
+			http.Error(lw, "请先输入 Web 访问密码", http.StatusUnauthorized)
+		}
+		return
+	}
+	authEnabled := s.auth.enabled()
+	// Registered accounts supersede the legacy shared BasicAuth password.
+	// The fallback is retained for lightweight embedders without account
+	// persistence and for compatibility tests.
+	if !authEnabled {
+		if s.ChatUserBlacklisted(clientIP) {
+			operation = "黑名单拒绝访问"
+			status = http.StatusForbidden
+			http.Error(lw, "此 IP 已被管理员加入黑名单", http.StatusForbidden)
 			return
 		}
+		if password != "" && s.webAccessRequired(r) {
+			_, pass, ok := r.BasicAuth()
+			if !ok || pass != password {
+				w.Header().Set("WWW-Authenticate", `Basic realm="LanChatGo"`)
+				http.Error(lw, "需要访问密码", http.StatusUnauthorized)
+				return
+			}
+		}
 	}
+	// Keep the optional client package public so a logged-in desktop client can
+	// update itself through its native HTTP updater (which does not share the
+	// embedded browser's cookie jar).
 	if r.URL.Path == "/__hfs/client/download" {
+		if s.webAccessRequired(r) {
+			operation = "Web access"
+			status = http.StatusUnauthorized
+			writeAuthJSON(lw, http.StatusUnauthorized, map[string]any{
+				"ok": false, "accessRequired": true, "message": "请先输入 Web 访问密码",
+			})
+			return
+		}
 		operation = "下载客户端"
 		s.serveClientDownload(lw, r)
 		return
@@ -770,15 +832,48 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		serveFluentEmoji(lw, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/__auth/") {
+		operation = "账号认证"
+		s.serveAuthAPI(lw, r, clientIP)
+		return
+	}
+	account := Account{ID: clientIP, Status: AccountStatusActive}
+	if authEnabled {
+		var authenticated bool
+		account, authenticated = s.authenticatedAccount(r)
+		if !authenticated {
+			operation = "需要登录"
+			status = http.StatusUnauthorized
+			if r.URL.Path == "/" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+				status = http.StatusOK
+				s.renderAuthPage(lw, r)
+			} else {
+				writeAuthJSON(lw, http.StatusUnauthorized, map[string]any{
+					"ok": false, "authenticated": false, "message": "请先登录",
+				})
+			}
+			return
+		}
+	}
+	requestAccount = account
+	r = r.WithContext(context.WithValue(r.Context(), accountContextKey{}, account))
+	if s.ChatUserBlacklisted(account.ID) {
+		operation = "账号禁止访问"
+		status = http.StatusForbidden
+		http.Error(lw, "该账号已被管理员禁止访问", http.StatusForbidden)
+		return
+	}
 	if r.URL.Path == "/__hfs/chat/status" {
 		operation = "查询聊天状态"
 		if r.Method != http.MethodGet {
 			http.Error(lw, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if _, _, err := s.ensureChatSession(lw, r); err != nil {
-			http.Error(lw, "无法创建聊天会话", http.StatusInternalServerError)
-			return
+		if !authEnabled {
+			if _, _, err := s.ensureChatSession(lw, r); err != nil {
+				http.Error(lw, "无法创建聊天会话", http.StatusInternalServerError)
+				return
+			}
 		}
 		lw.Header().Set("Content-Type", "application/json; charset=utf-8")
 		lw.Header().Set("Cache-Control", "no-store")
@@ -792,12 +887,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/__hfs/chat/file/") {
 		operation = "下载聊天附件"
-		s.serveChatAttachment(lw, r, clientIP)
+		s.serveChatAttachment(lw, r, account.ID)
 		return
 	}
 	if r.URL.Path == "/__hfs/chat/archive" {
 		operation = "查询聊天归档"
-		s.serveChatArchive(lw, r, clientIP)
+		s.serveChatArchive(lw, r, account.ID)
 		return
 	}
 	if r.URL.Path == "/__hfs/chat/upload" {
@@ -810,7 +905,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(lw, "origin not allowed", http.StatusForbidden)
 			return
 		}
-		s.handleChatAttachmentUpload(lw, r, clientIP)
+		s.handleChatAttachmentUpload(lw, r, account.ID)
 		return
 	}
 	if r.URL.Path == "/__hfs/chat/forward" {
@@ -823,7 +918,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(lw, "origin not allowed", http.StatusForbidden)
 			return
 		}
-		s.handleChatAttachmentForward(lw, r, clientIP)
+		s.handleChatAttachmentForward(lw, r, account.ID)
 		return
 	}
 	if r.URL.Path == "/__hfs/chat/ws" {
@@ -836,7 +931,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(lw, "聊天功能未启用", http.StatusForbidden)
 			return
 		}
-		status = s.handleChatWebSocket(w, r, accessVersion)
+		status = s.handleChatWebSocket(w, r, accessVersion, account)
 		return
 	}
 	if r.Method == http.MethodPost && !sameWriteOrigin(r) {
@@ -1318,18 +1413,18 @@ func (s *Server) trackPageVisitor(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		return
 	}
-	if _, _, err := s.ensureChatSession(w, r); err != nil {
-		if err != nil {
-			s.logger.Printf("创建访客会话失败: %v", err)
-		}
+	account, authenticated := accountFromContext(r.Context())
+	if !authenticated {
 		return
 	}
 	info := clientInfoFromRequest(r)
-	visitorID := info.IP
+	info.AccountID = account.ID
+	info.Username = account.Username
+	visitorID := account.ID
 	if visitorID == "" {
 		return
 	}
-	newUser := s.ObserveChatUser(info)
+	newUser := s.ObserveChatAccount(account.ID, account.Username, info)
 	s.visitorMu.Lock()
 	if _, seen := s.visitorSeen[visitorID]; seen {
 		s.visitorSeen[visitorID] = info.ConnectedAt

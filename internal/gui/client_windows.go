@@ -25,7 +25,6 @@ import (
 	"golang.org/x/sys/windows/registry"
 
 	"lanchatgo/internal/appinfo"
-	"lanchatgo/internal/discovery"
 )
 
 const (
@@ -35,7 +34,6 @@ const (
 
 	clientTrayShow      = 2201
 	clientTraySettings  = 2202
-	clientTrayScan      = 2203
 	clientTrayNotify    = 2204
 	clientTraySound     = 2205
 	clientTrayAutoStart = 2206
@@ -49,22 +47,13 @@ type desktopClientSettings struct {
 	Sound         bool   `json:"sound"`
 }
 
-type desktopClientServer struct {
-	Name           string `json:"name"`
-	Version        string `json:"version"`
-	URL            string `json:"url"`
-	ClientDownload bool   `json:"clientDownload"`
-}
-
 type desktopClientState struct {
-	Version       string                `json:"version"`
-	ServerURL     string                `json:"serverUrl"`
-	Scanning      bool                  `json:"scanning"`
-	Status        string                `json:"status"`
-	Servers       []desktopClientServer `json:"servers"`
-	AutoStart     bool                  `json:"autoStart"`
-	Notifications bool                  `json:"notifications"`
-	Sound         bool                  `json:"sound"`
+	Version       string `json:"version"`
+	ServerURL     string `json:"serverUrl"`
+	Status        string `json:"status"`
+	AutoStart     bool   `json:"autoStart"`
+	Notifications bool   `json:"notifications"`
+	Sound         bool   `json:"sound"`
 }
 
 type desktopClientController struct {
@@ -74,8 +63,6 @@ type desktopClientController struct {
 	logoDataURL       string
 	configPath        string
 	settings          desktopClientSettings
-	servers           []desktopClientServer
-	scanning          bool
 	status            string
 	trayAdded         bool
 	trayFlashing      bool
@@ -145,6 +132,10 @@ func RunClient(logo []byte) error {
 	}
 	configPath := filepath.Join(dataDir, "client.json")
 	settings := loadDesktopClientSettings(configPath)
+	settings.ServerURL, err = normalizeDesktopClientURL(appinfo.ClientServerURL)
+	if err != nil {
+		return fmt.Errorf("客户端内置的服务端地址无效：%w", err)
+	}
 	settings.AutoStart = desktopClientAutoStartEnabled()
 	configureClientWebView2TLS()
 
@@ -171,7 +162,7 @@ func RunClient(logo []byte) error {
 		logoDataURL:     "data:image/png;base64," + base64.StdEncoding.EncodeToString(logo),
 		configPath:      configPath,
 		settings:        settings,
-		status:          "正在准备局域网自动发现…",
+		status:          "正在连接内置服务端 " + settings.ServerURL,
 		trayAlertIcon:   createClientTrayAlertIcon(logo),
 		promptedUpdates: make(map[string]struct{}),
 	}
@@ -190,18 +181,19 @@ func RunClient(logo []byte) error {
 	controller.ensureTray()
 
 	bindings := map[string]interface{}{
-		"clientGetState":      controller.getState,
-		"clientConnect":       controller.connect,
-		"clientScan":          controller.scan,
-		"clientSetOption":     controller.setOption,
-		"clientCheckUpdate":   controller.checkUpdateNow,
-		"lanchatNotify":       controller.notify,
-		"lanchatUnread":       controller.updateUnread,
-		"lanchatOpenSettings": controller.openPortalSettings,
-		"lanchatCopyText":     controller.copyText,
-		"lanchatCopyImage":    controller.copyImage,
-		"lanchatCopyFile":     controller.copyFile,
-		"lanchatOpenExternal": controller.openExternal,
+		"clientGetState":          controller.getState,
+		"clientGetAccessPassword": func() string { return appinfo.ClientAccessPassword },
+		"clientRetry":             controller.connectBuiltIn,
+		"clientSetOption":         controller.setOption,
+		"clientCheckUpdate":       controller.checkUpdateNow,
+		"clientQuit":              controller.exit,
+		"lanchatNotify":           controller.notify,
+		"lanchatUnread":           controller.updateUnread,
+		"lanchatOpenSettings":     controller.openPortalSettings,
+		"lanchatCopyText":         controller.copyText,
+		"lanchatCopyImage":        controller.copyImage,
+		"lanchatCopyFile":         controller.copyFile,
+		"lanchatOpenExternal":     controller.openExternal,
 	}
 	for name, binding := range bindings {
 		if err = view.Bind(name, binding); err != nil {
@@ -220,7 +212,10 @@ func RunClient(logo []byte) error {
 	if hasArgument("--autostart") {
 		showWindow.Call(window, 0)
 	}
-	controller.scanAsync(true)
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		_ = controller.connectBuiltIn()
+	}()
 	view.Run()
 	controller.cleanup()
 	clientController = nil
@@ -261,7 +256,6 @@ func loadDesktopClientSettings(path string) desktopClientSettings {
 	if err == nil {
 		_ = json.Unmarshal(data, &settings)
 	}
-	settings.ServerURL, _ = normalizeDesktopClientURL(settings.ServerURL)
 	return settings
 }
 
@@ -298,27 +292,22 @@ func (c *desktopClientController) getState() desktopClientState {
 	return desktopClientState{
 		Version:       appinfo.Version,
 		ServerURL:     c.settings.ServerURL,
-		Scanning:      c.scanning,
 		Status:        c.status,
-		Servers:       append([]desktopClientServer(nil), c.servers...),
 		AutoStart:     c.settings.AutoStart,
 		Notifications: c.settings.Notifications,
 		Sound:         c.settings.Sound,
 	}
 }
 
-func (c *desktopClientController) connect(raw string) error {
-	address, err := normalizeDesktopClientURL(raw)
-	if err != nil {
-		return err
-	}
+func (c *desktopClientController) connectBuiltIn() error {
 	c.mu.Lock()
-	c.settings.ServerURL = address
+	address := c.settings.ServerURL
+	if address == "" {
+		c.mu.Unlock()
+		return errors.New("客户端没有内置服务端地址")
+	}
 	c.status = "正在连接 " + address
 	c.mu.Unlock()
-	if err = c.saveSettings(); err != nil {
-		return fmt.Errorf("保存服务地址失败：%w", err)
-	}
 	c.view.Dispatch(func() {
 		if clientController == c && c.view != nil {
 			c.view.Navigate(address)
@@ -359,6 +348,13 @@ func (c *desktopClientController) openExternal(rawURL string) error {
 	return exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", parsed.String()).Start()
 }
 
+func addClientAccessHeader(request *http.Request) {
+	if request == nil || appinfo.ClientAccessPassword == "" {
+		return
+	}
+	request.Header.Set("X-LanChatGo-Access-Password", appinfo.ClientAccessPassword)
+}
+
 const maxClientUpdateBytes = 256 << 20
 
 func (c *desktopClientController) checkServerUpdate(address string) {
@@ -367,6 +363,7 @@ func (c *desktopClientController) checkServerUpdate(address string) {
 		return
 	}
 	request.Header.Set("User-Agent", "LanChatGo-Client/"+appinfo.Version)
+	addClientAccessHeader(request)
 	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // #nosec G402 -- LAN servers may use the generated self-signed certificate.
 	response, err := (&http.Client{Transport: transport, Timeout: 10 * time.Second}).Do(request)
 	if err != nil {
@@ -381,16 +378,6 @@ func (c *desktopClientController) checkServerUpdate(address string) {
 		return
 	}
 	download := strings.EqualFold(strings.TrimSpace(response.Header.Get("X-LanChatGo-Client-Download")), "true")
-	if !download {
-		c.mu.RLock()
-		for _, service := range c.servers {
-			if strings.EqualFold(strings.TrimRight(service.URL, "/"), strings.TrimRight(address, "/")) && service.ClientDownload {
-				download = true
-				break
-			}
-		}
-		c.mu.RUnlock()
-	}
 	if !download {
 		return
 	}
@@ -448,6 +435,7 @@ func (c *desktopClientController) checkUpdateNow() (string, error) {
 		return "", err
 	}
 	request.Header.Set("User-Agent", "LanChatGo-Client/"+appinfo.Version)
+	addClientAccessHeader(request)
 	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // #nosec G402 -- LAN servers may use generated self-signed certificates.
 	response, err := (&http.Client{Transport: transport, Timeout: 10 * time.Second}).Do(request)
 	if err != nil {
@@ -494,6 +482,7 @@ func (c *desktopClientController) downloadAndRestart(address, version string) er
 		return err
 	}
 	request.Header.Set("User-Agent", "LanChatGo-Client/"+appinfo.Version)
+	addClientAccessHeader(request)
 	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // #nosec G402 -- LAN servers may use the generated self-signed certificate.
 	response, err := (&http.Client{Transport: transport, Timeout: 3 * time.Minute}).Do(request)
 	if err != nil {
@@ -597,72 +586,6 @@ func normalizeDesktopClientURL(raw string) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return strings.TrimRight(parsed.String(), "/"), nil
-}
-
-func (c *desktopClientController) scan() desktopClientState {
-	c.scanAsync(false)
-	return c.getState()
-}
-
-func (c *desktopClientController) scanAsync(autoConnect bool) {
-	c.mu.Lock()
-	if c.scanning {
-		c.mu.Unlock()
-		return
-	}
-	c.scanning = true
-	c.status = "正在通过局域网广播发现 LanChatGo 服务…"
-	c.mu.Unlock()
-	c.refreshLauncher()
-	go func() {
-		services, err := discovery.ScanCClass(context.Background(), 1600*time.Millisecond)
-		found := make([]desktopClientServer, 0, len(services))
-		for _, service := range services {
-			if address := service.PreferredURL(); address != "" {
-				found = append(found, desktopClientServer{
-					Name:           service.Name,
-					Version:        service.Version,
-					URL:            address,
-					ClientDownload: service.ClientDownload,
-				})
-			}
-		}
-		c.mu.Lock()
-		c.servers = found
-		c.scanning = false
-		saved := c.settings.ServerURL
-		switch {
-		case err != nil:
-			c.status = "自动发现不可用，可手动输入服务地址"
-		case len(found) == 0:
-			c.status = "未发现局域网服务，可手动输入地址或重新扫描"
-		case len(found) == 1:
-			c.status = "已发现 1 个服务"
-		default:
-			c.status = fmt.Sprintf("已发现 %d 个服务", len(found))
-		}
-		c.mu.Unlock()
-		c.refreshLauncher()
-		if !autoConnect {
-			return
-		}
-		target := ""
-		for _, item := range found {
-			if strings.EqualFold(item.URL, saved) {
-				target = item.URL
-				break
-			}
-		}
-		if target == "" && len(found) > 0 {
-			target = found[0].URL
-		}
-		if target == "" {
-			target = saved
-		}
-		if target != "" {
-			_ = c.connect(target)
-		}
-	}()
 }
 
 func (c *desktopClientController) setOption(name string, enabled bool) (desktopClientState, error) {
@@ -940,20 +863,45 @@ func (c *desktopClientController) showTrayNotification(title, body, avatar strin
 	data := c.trayData()
 	balloonIcon := createClientAvatarIcon(avatar)
 	if balloonIcon == 0 {
+		balloonIcon = createClientDefaultAvatarIcon()
+	}
+	if balloonIcon == 0 {
 		balloonIcon = data.Icon
 	}
-	if balloonIcon != data.Icon {
-		defer clientDestroyIcon.Call(balloonIcon)
+	customIcon := balloonIcon != data.Icon
+	if customIcon {
+		// Windows 10/11 can ignore hBalloonIcon for legacy tray notifications.
+		// Supplying the sender avatar as both icons makes the notification use
+		// the sender while the tray icon is restored immediately afterwards.
+		data.Icon = balloonIcon
 	}
 	data = trayNotificationData(data, "LanChatGo · "+title, body, niifUser|niifNoSound|niifLargeIcon, balloonIcon)
-	if showNotifyIconNotification(data) {
+	shown := showNotifyIconNotification(data)
+	if !shown && c.readdTray() {
+		data = c.trayData()
+		if customIcon {
+			data.Icon = balloonIcon
+		}
+		data = trayNotificationData(data, "LanChatGo · "+title, body, niifUser|niifNoSound|niifLargeIcon, balloonIcon)
+		shown = showNotifyIconNotification(data)
+	}
+	if customIcon {
+		c.restoreTrayApplicationIcon()
+		clientDestroyIcon.Call(balloonIcon)
+	}
+	_ = shown
+}
+
+func (c *desktopClientController) restoreTrayApplicationIcon() {
+	c.mu.RLock()
+	added, exiting := c.trayAdded, c.exiting
+	c.mu.RUnlock()
+	if !added || exiting {
 		return
 	}
-	if c.readdTray() {
-		data = c.trayData()
-		data = trayNotificationData(data, "LanChatGo · "+title, body, niifUser|niifNoSound|niifLargeIcon, balloonIcon)
-		showNotifyIconNotification(data)
-	}
+	data := c.trayData()
+	data.Flags = nifIcon
+	shellNotify.Call(nimModify, uintptr(unsafe.Pointer(&data)))
 }
 
 func (c *desktopClientController) openNotificationRoute() {
@@ -1041,8 +989,7 @@ func (c *desktopClientController) showTrayMenu() {
 	settings := c.settings
 	c.mu.RUnlock()
 	appendClientMenuItem(menu, clientTrayShow, "显示聊天窗口", false)
-	appendClientMenuItem(menu, clientTraySettings, "连接与通知设置", false)
-	appendClientMenuItem(menu, clientTrayScan, "重新发现局域网服务", false)
+	appendClientMenuItem(menu, clientTraySettings, "客户端设置", false)
 	appendMenu.Call(menu, 0x800, 0, 0)
 	appendClientMenuItem(menu, clientTrayNotify, "新消息通知", settings.Notifications)
 	appendClientMenuItem(menu, clientTraySound, "通知声音", settings.Sound)
@@ -1058,10 +1005,6 @@ func (c *desktopClientController) showTrayMenu() {
 	case clientTraySettings:
 		c.restore()
 		c.openPortalSettings()
-	case clientTrayScan:
-		c.restore()
-		c.showLauncher()
-		c.scanAsync(false)
 	case clientTrayNotify:
 		_, _ = c.setOption("notifications", !settings.Notifications)
 	case clientTraySound:
@@ -1100,7 +1043,18 @@ func desktopClientWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) 
 		return 0
 	}
 	switch message {
+	case wmSysKeyDown:
+		// Alt+F4 is a deliberate exit shortcut. A title-bar X still follows
+		// the normal WM_SYSCOMMAND/SC_CLOSE path below and hides to the tray.
+		if wParam == vkF4 && controller != nil {
+			controller.exit()
+			return 0
+		}
 	case wmSysCommand:
+		if controller != nil && isClientKeyboardCloseCommand(message, wParam, lParam) {
+			controller.exit()
+			return 0
+		}
 		if wParam&0xfff0 == scClose && controller != nil {
 			controller.hide()
 			return 0
@@ -1140,13 +1094,18 @@ func desktopClientWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) 
 	return result
 }
 
+func isClientKeyboardCloseCommand(message uint32, wParam, lParam uintptr) bool {
+	return message == wmSysCommand && wParam&0xfff0 == scClose && lParam == 0
+}
+
 func renderDesktopClientHTML(logoDataURL string) string {
 	html := `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LanChatGo 客户端</title><style>
 :root{font-family:Inter,"Segoe UI","Microsoft YaHei UI",sans-serif;color:#1d2737;background:#f3f5f8}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f3f5f8}.top{height:66px;display:flex;align-items:center;padding:0 26px;border-bottom:1px solid #dfe4ec;background:#fff}.logo{width:42px;height:42px;border-radius:10px}.brand{margin-left:11px;font-size:19px;font-weight:850}.version{margin-left:7px;padding:2px 7px;border-radius:99px;background:#edf3ff;color:#2f6fed;font-size:10px}.sub{margin-top:2px;color:#758196;font-size:10px}.shell{width:min(920px,calc(100% - 30px));margin:22px auto;display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:14px}.card{border:1px solid #dfe4ec;border-radius:13px;background:#fff}.head{padding:18px;border-bottom:1px solid #e7ebf1}.title{font-size:18px;font-weight:820}.note{margin-top:5px;color:#758196;font-size:11px;line-height:1.6}.body{padding:16px}.status{padding:11px 13px;border-radius:9px;background:#edf3ff;color:#3869b4;font-size:11px}.servers{display:grid;gap:8px;margin-top:12px}.server{width:100%;display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px;border:1px solid #dfe5ee;border-radius:10px;background:#fff;text-align:left;cursor:pointer}.server:hover{border-color:#8db5f5;background:#f7faff}.server-icon{width:42px;height:42px;display:grid;place-items:center;border-radius:9px;background:#2f6fed;color:#fff;font-weight:850}.server-name{font-size:13px;font-weight:780}.server-url{margin-top:4px;color:#758196;font-size:10px}.tag{padding:3px 7px;border-radius:99px;background:#eaf8f2;color:#16835d;font-size:9px}.empty{padding:32px 12px;color:#8994a5;text-align:center;font-size:11px}.manual{display:flex;gap:8px;margin-top:13px}.input{min-width:0;flex:1;height:40px;padding:0 11px;border:1px solid #d8e0ea;border-radius:9px;outline:0}.input:focus{border-color:#75a5f4;box-shadow:0 0 0 3px rgba(47,111,237,.1)}button{height:40px;padding:0 13px;border:1px solid #d8e0ea;border-radius:9px;background:#fff;color:#34435a;cursor:pointer}.primary{border-color:#2f6fed;background:#2f6fed;color:#fff;font-weight:750}.side-title{padding:16px 17px;border-bottom:1px solid #e7ebf1;font-size:14px;font-weight:800}.option{display:flex;align-items:center;gap:12px;min-height:62px;padding:10px 16px;border-bottom:1px solid #edf0f4}.option:last-child{border-bottom:0}.copy{min-width:0;flex:1}.option-name{font-size:12px;font-weight:740}.option-note{margin-top:4px;color:#7a8698;font-size:9px;line-height:1.45}.switch{position:relative;width:42px;height:23px}.switch input{position:absolute;opacity:0}.slider{position:absolute;inset:0;border-radius:99px;background:#cbd3de}.slider:after{content:"";position:absolute;left:3px;top:3px;width:17px;height:17px;border-radius:50%;background:#fff;box-shadow:0 2px 5px rgba(0,0,0,.15);transition:.15s}.switch input:checked+.slider{background:#2f6fed}.switch input:checked+.slider:after{transform:translateX(19px)}.tray-note{margin-top:14px;padding:13px;border-radius:10px;background:#fff8e7;color:#80661e;font-size:10px;line-height:1.6}@media(max-width:720px){.shell{grid-template-columns:1fr}.top{padding:0 15px}}</style></head><body>
-<header class="top"><img class="logo" src="{{LOGO}}" alt=""><div><div><span class="brand">LanChatGo 客户端</span><span class="version">v{{VERSION}}</span></div><div class="sub">自动发现局域网服务 · 原生托盘通知</div></div></header>
-<main class="shell"><section class="card"><div class="head"><div class="title">连接服务端</div><div class="note">启动时只发送一次局域网发现广播，不扫描每个 IP 或端口。</div></div><div class="body"><div id="status" class="status">正在发现服务…</div><div id="servers" class="servers"></div><form id="manual" class="manual"><input id="address" class="input" placeholder="例如 http://192.168.1.10 或 https://192.168.1.10"><button class="primary">连接</button><button id="scan" type="button">重新扫描</button></form></div></section>
-<aside><section class="card"><div class="side-title">设置</div><label class="option"><span class="copy"><span class="option-name">开机自动启动</span><span class="option-note">登录 Windows 后自动连接上次或发现到的服务</span></span><span class="switch"><input id="autoStart" type="checkbox"><span class="slider"></span></span></label><label class="option"><span class="copy"><span class="option-name">新消息通知</span><span class="option-note">使用系统托盘通知，不受浏览器通知权限限制</span></span><span class="switch"><input id="notifications" type="checkbox"><span class="slider"></span></span></label><label class="option"><span class="copy"><span class="option-name">通知声音</span><span class="option-note">收到新消息时播放 Windows 提示音</span></span><span class="switch"><input id="sound" type="checkbox"><span class="slider"></span></span></label></section><div class="tray-note">点击窗口 × 会隐藏到托盘，不会退出。右击托盘图标可重新扫描、调整通知或退出客户端。</div></aside></main>
-<script>(function(){'use strict';var state=null;function $(id){return document.getElementById(id)}function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}function render(){if(!state)return;$('status').textContent=state.status||'等待操作';$('scan').disabled=!!state.scanning;if(document.activeElement!==$('address'))$('address').value=state.serverUrl||'';['autoStart','notifications','sound'].forEach(function(k){$(k).checked=!!state[k]});var rows=(state.servers||[]).map(function(s){return'<button class="server" type="button" data-url="'+esc(s.url)+'"><span class="server-icon">LC</span><span><span class="server-name">'+esc(s.name||'LanChatGo')+' <small>v'+esc(s.version||'未知')+'</small></span><span class="server-url">'+esc(s.url)+'</span></span><span class="tag">连接</span></button>'}).join('');$('servers').innerHTML=rows||'<div class="empty">暂未发现服务，可手动输入地址。</div>';$('servers').querySelectorAll('.server').forEach(function(b){b.onclick=function(){window.clientConnect(b.dataset.url).catch(alert)}})}async function refresh(){try{state=await window.clientGetState();render()}catch(e){}}window.clientRefresh=refresh;$('manual').onsubmit=function(e){e.preventDefault();window.clientConnect($('address').value).catch(function(e){alert(e.message||e)})};$('scan').onclick=function(){window.clientScan().then(function(s){state=s;render()})};['autoStart','notifications','sound'].forEach(function(k){$(k).onchange=function(){window.clientSetOption(k,$(k).checked).then(function(s){state=s;render()}).catch(function(e){alert(e.message||e);refresh()})}});refresh();setInterval(refresh,1000)})();</script></body></html>`
+<header class="top"><img class="logo" src="{{LOGO}}" alt=""><div><div><span class="brand">LanChatGo 客户端</span><span class="version">v{{VERSION}}</span></div><div class="sub">固定服务端 · 原生托盘通知</div></div></header>
+<main class="shell"><section class="card"><div class="head"><div class="title">内置服务端</div><div class="note">客户端地址在编译时写入，启动后会直接连接，不进行局域网探测，也不允许手动更改。</div></div><div class="body"><div id="status" class="status">正在连接内置服务端…</div><div class="server"><span class="server-icon">LC</span><span><span class="server-name">固定连接地址</span><span id="server-url" class="server-url"></span></span><button id="retry" class="primary" type="button">重新连接</button></div></div></section>
+<aside><section class="card"><div class="side-title">设置</div><label class="option"><span class="copy"><span class="option-name">开机自动启动</span><span class="option-note">登录 Windows 后自动连接内置服务端</span></span><span class="switch"><input id="autoStart" type="checkbox"><span class="slider"></span></span></label><label class="option"><span class="copy"><span class="option-name">新消息通知</span><span class="option-note">使用系统托盘通知，不受浏览器通知权限限制</span></span><span class="switch"><input id="notifications" type="checkbox"><span class="slider"></span></span></label><label class="option"><span class="copy"><span class="option-name">通知声音</span><span class="option-note">收到新消息时播放 Windows 提示音</span></span><span class="switch"><input id="sound" type="checkbox"><span class="slider"></span></span></label></section><div class="tray-note">点击窗口 × 会隐藏到托盘，不会退出。右击托盘图标可调整通知或退出客户端。</div></aside></main>
+<script>(function(){'use strict';var state=null;function $(id){return document.getElementById(id)}function render(){if(!state)return;$('status').textContent=state.status||'等待操作';$('server-url').textContent=state.serverUrl||'构建地址缺失';['autoStart','notifications','sound'].forEach(function(k){$(k).checked=!!state[k]})}async function refresh(){try{state=await window.clientGetState();render()}catch(e){}}window.clientRefresh=refresh;$('retry').onclick=function(){window.clientRetry().catch(function(e){alert(e.message||e)})};['autoStart','notifications','sound'].forEach(function(k){$(k).onchange=function(){window.clientSetOption(k,$(k).checked).then(function(s){state=s;render()}).catch(function(e){alert(e.message||e);refresh()})}});refresh();setInterval(refresh,1000)})();</script></body></html>`
+	html = strings.Replace(html, "</body></html>", `<script>(function(){window.addEventListener('keydown',function(e){if(e.altKey&&(e.key==='F4'||e.keyCode===115)){e.preventDefault();if(window.clientQuit)window.clientQuit()}})})();</script></body></html>`, 1)
 	html = strings.ReplaceAll(html, "{{LOGO}}", logoDataURL)
 	html = strings.ReplaceAll(html, "{{VERSION}}", appinfo.Version)
 	return html

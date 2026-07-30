@@ -3,9 +3,12 @@
 package gui
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/binary"
 	"image"
 	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +48,50 @@ func TestClientTrayAlertIconCanBeCreatedFromProjectLogo(t *testing.T) {
 		t.Fatal("CreateIconFromResourceEx could not create the red LanChatGo tray icon")
 	}
 	clientDestroyIcon.Call(icon)
+}
+
+func TestClientNotificationAvatarAcceptsImageDataURLs(t *testing.T) {
+	source := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	source.SetNRGBA(0, 0, color.NRGBA{R: 20, G: 120, B: 240, A: 255})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes())
+	if decoded := decodeClientAvatarImage(dataURL); decoded == nil {
+		t.Fatal("PNG sender avatar data URL was rejected")
+	}
+	icon := createClientAvatarIcon(dataURL)
+	if icon == 0 {
+		t.Fatal("sender avatar could not be converted to a Windows notification icon")
+	}
+	clientDestroyIcon.Call(icon)
+	if decoded := decodeClientAvatarImage("data:text/plain;base64,SGVsbG8="); decoded != nil {
+		t.Fatal("non-image notification avatar was accepted")
+	}
+}
+
+func TestClientNotificationHasDefaultUserAvatar(t *testing.T) {
+	icon := createClientDefaultAvatarIcon()
+	if icon == 0 {
+		t.Fatal("default sender avatar could not be converted to a Windows notification icon")
+	}
+	clientDestroyIcon.Call(icon)
+}
+
+func TestClientKeyboardCloseDistinguishesAltF4FromTitleBarClose(t *testing.T) {
+	if !isClientKeyboardCloseCommand(wmSysCommand, scClose, 0) {
+		t.Fatal("Alt+F4 system close was not recognized as an exit request")
+	}
+	if !isClientKeyboardCloseCommand(wmSysCommand, scClose|0x0003, 0) {
+		t.Fatal("system-command flag bits were not masked")
+	}
+	if isClientKeyboardCloseCommand(wmSysCommand, scClose, uintptr(100|(200<<16))) {
+		t.Fatal("title-bar close coordinates were mistaken for Alt+F4")
+	}
+	if isClientKeyboardCloseCommand(wmClose, scClose, 0) {
+		t.Fatal("plain WM_CLOSE was mistaken for a keyboard close command")
+	}
 }
 
 func TestTrayCallbackEventSupportsNotifyIconVersion4Packing(t *testing.T) {
@@ -114,20 +161,27 @@ func TestConfigureClientWebView2TLSKeepsExistingArguments(t *testing.T) {
 	}
 }
 
-func TestDesktopClientHTMLIncludesDiscoveryTrayAndNotificationControls(t *testing.T) {
+func TestDesktopClientHTMLUsesBuiltInAddressAndNotificationControls(t *testing.T) {
 	html := renderDesktopClientHTML("data:image/png;base64,test")
 	for _, marker := range []string{
-		"启动时只发送一次局域网发现广播",
-		`id="address"`,
-		`id="scan"`,
+		"地址在编译时写入",
+		`id="server-url"`,
+		`id="retry"`,
 		`id="autoStart"`,
 		`id="notifications"`,
 		`id="sound"`,
-		"右击托盘图标可重新扫描、调整通知或退出客户端",
-		"window.clientConnect",
+		"右击托盘图标可调整通知或退出客户端",
+		"window.clientRetry",
+		"window.clientQuit",
+		"e.altKey&&(e.key==='F4'||e.keyCode===115)",
 	} {
 		if !strings.Contains(html, marker) {
 			t.Fatalf("desktop client HTML missing %q", marker)
+		}
+	}
+	for _, removed := range []string{`id="address"`, `id="scan"`, "window.clientConnect", "window.clientScan", "手动输入"} {
+		if strings.Contains(html, removed) {
+			t.Fatalf("desktop client HTML still exposes removed discovery/input UI %q", removed)
 		}
 	}
 }

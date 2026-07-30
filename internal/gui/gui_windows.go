@@ -165,6 +165,7 @@ const (
 	wmCtlColorStatic   = 0x0138
 	wmContextMenu      = 0x007B
 	wmKeyDown          = 0x0100
+	wmSysKeyDown       = 0x0104
 	wmChar             = 0x0102
 	wmIMEStart         = 0x010D
 	wmIMEEnd           = 0x010E
@@ -181,6 +182,7 @@ const (
 	wmLButtonUp        = 0x0202
 	wmMouseMove        = 0x0200
 	scClose            = 0xF060
+	vkF4               = 0x73
 	wsOverlappedWindow = 0x00CF0000
 	wsVisible          = 0x10000000
 	wsChild            = 0x40000000
@@ -1981,7 +1983,11 @@ func handleVisitorNotifications() {
 	if len(visitors) > 1 {
 		summary += fmt.Sprintf("（另有 %d 位新访客）", len(visitors)-1)
 	}
-	showTrayNotification("新用户访问", summary)
+	title := "新用户访问"
+	if strings.TrimSpace(latest.Username) != "" {
+		title = "新账号访问 · " + latest.Username
+	}
+	showTrayNotification(title, summary)
 }
 
 func showTrayNotification(title, summary string) {

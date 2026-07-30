@@ -27,6 +27,8 @@ var (
 	bucketMessages    = []byte("messages")
 	bucketAttachments = []byte("attachments")
 	bucketAccess      = []byte("access")
+	bucketAccounts    = []byte("accounts")
+	bucketSessions    = []byte("account-sessions")
 
 	keySettings = []byte("settings")
 	keyShares   = []byte("shares")
@@ -73,7 +75,7 @@ func Open(path string) (*DB, error) {
 		attachmentRoot: filepath.Join(filepath.Dir(absolute), "chat_files"),
 	}
 	if err = raw.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bucketApp, bucketUsers, bucketRemarks, bucketMessages, bucketAttachments, bucketAccess} {
+		for _, name := range [][]byte{bucketApp, bucketUsers, bucketRemarks, bucketMessages, bucketAttachments, bucketAccess, bucketAccounts, bucketSessions} {
 			if _, createErr := tx.CreateBucketIfNotExists(name); createErr != nil {
 				return createErr
 			}
@@ -105,6 +107,110 @@ func (d *DB) LoadSettings(value any) (bool, error) {
 
 func (d *DB) SaveSettings(value any) error {
 	return d.saveAppJSON(keySettings, value)
+}
+
+func (d *DB) LoadAccounts() ([]server.Account, error) {
+	items := make([]server.Account, 0)
+	err := d.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketAccounts).ForEach(func(_, value []byte) error {
+			var item server.Account
+			if err := json.Unmarshal(value, &item); err != nil {
+				return err
+			}
+			items = append(items, item)
+			return nil
+		})
+	})
+	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.Before(items[j].CreatedAt) })
+	return items, err
+}
+
+func (d *DB) SaveAccount(account server.Account) error {
+	raw, err := json.Marshal(account)
+	if err != nil {
+		return err
+	}
+	return d.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketAccounts).Put([]byte(account.ID), raw)
+	})
+}
+
+func (d *DB) DeleteAccount(id string) error {
+	return d.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.Bucket(bucketAccounts).Delete([]byte(id)); err != nil {
+			return err
+		}
+		sessions := tx.Bucket(bucketSessions)
+		var remove [][]byte
+		if err := sessions.ForEach(func(key, value []byte) error {
+			var session server.AccountSession
+			if json.Unmarshal(value, &session) == nil && session.AccountID == id {
+				remove = append(remove, append([]byte(nil), key...))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, key := range remove {
+			if err := sessions.Delete(key); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (d *DB) LoadAccountSessions() ([]server.AccountSession, error) {
+	items := make([]server.AccountSession, 0)
+	err := d.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketSessions).ForEach(func(_, value []byte) error {
+			var item server.AccountSession
+			if err := json.Unmarshal(value, &item); err != nil {
+				return err
+			}
+			items = append(items, item)
+			return nil
+		})
+	})
+	return items, err
+}
+
+func (d *DB) SaveAccountSession(session server.AccountSession) error {
+	raw, err := json.Marshal(session)
+	if err != nil {
+		return err
+	}
+	return d.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketSessions).Put([]byte(session.TokenHash), raw)
+	})
+}
+
+func (d *DB) DeleteAccountSession(tokenHash string) error {
+	return d.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketSessions).Delete([]byte(tokenHash))
+	})
+}
+
+func (d *DB) DeleteAccountSessions(accountID string) error {
+	return d.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(bucketSessions)
+		var remove [][]byte
+		if err := bucket.ForEach(func(key, value []byte) error {
+			var session server.AccountSession
+			if json.Unmarshal(value, &session) == nil && session.AccountID == accountID {
+				remove = append(remove, append([]byte(nil), key...))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, key := range remove {
+			if err := bucket.Delete(key); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (d *DB) LoadCertificateBundle() (CertificateBundle, bool, error) {

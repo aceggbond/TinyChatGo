@@ -205,7 +205,6 @@ static void LCGSetUnread(int total) {
 import "C"
 
 import (
-	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -225,7 +224,6 @@ import (
 	webview "github.com/webview/webview_go"
 
 	"lanchatgo/internal/appinfo"
-	"lanchatgo/internal/discovery"
 )
 
 type darwinClientSettings struct {
@@ -234,19 +232,12 @@ type darwinClientSettings struct {
 	Notifications bool   `json:"notifications"`
 }
 
-type darwinClientServer struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	URL     string `json:"url"`
-}
-
 type darwinClientState struct {
-	Version       string               `json:"version"`
-	ServerURL     string               `json:"serverUrl"`
-	Status        string               `json:"status"`
-	Servers       []darwinClientServer `json:"servers"`
-	AutoStart     bool                 `json:"autoStart"`
-	Notifications bool                 `json:"notifications"`
+	Version       string `json:"version"`
+	ServerURL     string `json:"serverUrl"`
+	Status        string `json:"status"`
+	AutoStart     bool   `json:"autoStart"`
+	Notifications bool   `json:"notifications"`
 }
 
 type darwinClientController struct {
@@ -255,7 +246,6 @@ type darwinClientController struct {
 	logoURL    string
 	configPath string
 	settings   darwinClientSettings
-	servers    []darwinClientServer
 	status     string
 }
 
@@ -274,6 +264,10 @@ func RunClient(logo []byte) error {
 	}
 	configPath := filepath.Join(configDir, "client.json")
 	settings := loadDarwinClientSettings(configPath)
+	settings.ServerURL, err = normalizeDarwinClientURL(appinfo.ClientServerURL)
+	if err != nil {
+		return fmt.Errorf("客户端内置的服务端地址无效：%w", err)
+	}
 	settings.AutoStart = darwinClientAutoStartEnabled()
 
 	view := webview.New(false)
@@ -289,32 +283,36 @@ func RunClient(logo []byte) error {
 		logoURL:    "data:image/png;base64," + base64.StdEncoding.EncodeToString(logo),
 		configPath: configPath,
 		settings:   settings,
-		status:     "请选择发现的局域网服务，或手动输入服务端地址",
+		status:     "正在连接内置服务端 " + settings.ServerURL,
 	}
 	for name, binding := range map[string]interface{}{
-		"clientGetState":      controller.getState,
-		"clientConnect":       controller.connect,
-		"clientScan":          controller.scan,
-		"clientSetOption":     controller.setOption,
-		"clientCheckUpdate":   controller.checkUpdateNow,
-		"lanchatNotify":       controller.notify,
-		"lanchatUnread":       controller.updateUnread,
-		"lanchatOpenSettings": controller.openPortalSettings,
-		"lanchatCopyText":     controller.copyText,
-		"lanchatCopyImage":    controller.copyImage,
-		"lanchatCopyFile":     controller.copyFile,
-		"lanchatOpenExternal": controller.openExternal,
+		"clientGetState":          controller.getState,
+		"clientGetAccessPassword": func() string { return appinfo.ClientAccessPassword },
+		"clientRetry":             controller.connectBuiltIn,
+		"clientSetOption":         controller.setOption,
+		"clientCheckUpdate":       controller.checkUpdateNow,
+		"lanchatNotify":           controller.notify,
+		"lanchatUnread":           controller.updateUnread,
+		"lanchatOpenSettings":     controller.openPortalSettings,
+		"lanchatCopyText":         controller.copyText,
+		"lanchatCopyImage":        controller.copyImage,
+		"lanchatCopyFile":         controller.copyFile,
+		"lanchatOpenExternal":     controller.openExternal,
 	} {
 		if err = view.Bind(name, binding); err != nil {
 			return fmt.Errorf("注册 macOS 客户端操作 %s 失败：%w", name, err)
 		}
 	}
-	view.SetHtml(renderDarwinClientHTML(controller.logoURL, true))
+	view.SetHtml(renderDarwinClientHTML(controller.logoURL))
 	if len(logo) > 0 {
 		C.LCGConfigureClient(view.Window(), unsafe.Pointer(&logo[0]), C.int(len(logo)))
 	} else {
 		C.LCGConfigureClient(view.Window(), nil, 0)
 	}
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		_ = controller.connectBuiltIn()
+	}()
 	view.Run()
 	return nil
 }
@@ -324,7 +322,6 @@ func loadDarwinClientSettings(path string) darwinClientSettings {
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &settings)
 	}
-	settings.ServerURL, _ = normalizeDarwinClientURL(settings.ServerURL)
 	return settings
 }
 
@@ -346,24 +343,20 @@ func (c *darwinClientController) getState() darwinClientState {
 		Version:       appinfo.Version,
 		ServerURL:     c.settings.ServerURL,
 		Status:        c.status,
-		Servers:       append([]darwinClientServer(nil), c.servers...),
 		AutoStart:     c.settings.AutoStart,
 		Notifications: c.settings.Notifications,
 	}
 }
 
-func (c *darwinClientController) connect(raw string) error {
-	address, err := normalizeDarwinClientURL(raw)
-	if err != nil {
-		return err
-	}
+func (c *darwinClientController) connectBuiltIn() error {
 	c.mu.Lock()
-	c.settings.ServerURL = address
+	address := c.settings.ServerURL
+	if address == "" {
+		c.mu.Unlock()
+		return errors.New("客户端没有内置服务端地址")
+	}
 	c.status = "正在连接 " + address
 	c.mu.Unlock()
-	if err = c.saveSettings(); err != nil {
-		return fmt.Errorf("保存服务地址失败：%w", err)
-	}
 	c.view.Dispatch(func() { c.view.Navigate(address) })
 	return nil
 }
@@ -446,28 +439,6 @@ func normalizeDarwinClientURL(raw string) (string, error) {
 	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
-func (c *darwinClientController) scan() darwinClientState {
-	services, err := discovery.ScanCClass(context.Background(), 1600*time.Millisecond)
-	found := make([]darwinClientServer, 0, len(services))
-	for _, service := range services {
-		if address := service.PreferredURL(); address != "" {
-			found = append(found, darwinClientServer{Name: service.Name, Version: service.Version, URL: address})
-		}
-	}
-	c.mu.Lock()
-	c.servers = found
-	switch {
-	case err != nil:
-		c.status = "自动发现不可用，可手动输入服务端地址"
-	case len(found) == 0:
-		c.status = "未发现局域网服务，可手动输入地址或重新扫描"
-	default:
-		c.status = fmt.Sprintf("已发现 %d 个 LanChatGo 服务", len(found))
-	}
-	c.mu.Unlock()
-	return c.getState()
-}
-
 func (c *darwinClientController) setOption(name string, enabled bool) (darwinClientState, error) {
 	switch name {
 	case "notifications":
@@ -527,6 +498,7 @@ func (c *darwinClientController) checkUpdateNow() (string, error) {
 		return "", err
 	}
 	request.Header.Set("User-Agent", "LanChatGo-Client/"+appinfo.Version)
+	addDarwinClientAccessHeader(request)
 	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // #nosec G402 -- generated LAN certificates are self-signed.
 	response, err := (&http.Client{Transport: transport, Timeout: 10 * time.Second}).Do(request)
 	if err != nil {
@@ -538,6 +510,13 @@ func (c *darwinClientController) checkUpdateNow() (string, error) {
 		return "当前已是最新版 v" + appinfo.Version, nil
 	}
 	return "发现新版 v" + version + "，请从服务器网页下载并替换 macOS 客户端", nil
+}
+
+func addDarwinClientAccessHeader(request *http.Request) {
+	if request == nil || appinfo.ClientAccessPassword == "" {
+		return
+	}
+	request.Header.Set("X-LanChatGo-Access-Password", appinfo.ClientAccessPassword)
 }
 
 func darwinClientLaunchAgentPath() string {
@@ -585,14 +564,14 @@ func setDarwinClientAutoStart(enabled bool) error {
 	return os.WriteFile(path, []byte(plist), 0600)
 }
 
-func renderDarwinClientHTML(logoURL string, autoConnect bool) string {
+func renderDarwinClientHTML(logoURL string) string {
 	page := `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LanChatGo 客户端</title><style>
 :root{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;color:#1d2737;background:#f3f5f8}*{box-sizing:border-box}body{margin:0}.top{height:70px;display:flex;align-items:center;padding:0 28px;border-bottom:1px solid #dfe4ec;background:#fff}.logo{width:44px;height:44px;border-radius:11px}.brand{margin-left:12px;font-size:20px;font-weight:800}.version{margin-left:8px;padding:2px 7px;border-radius:99px;background:#edf3ff;color:#2f6fed;font-size:10px}.shell{width:min(940px,calc(100% - 32px));margin:24px auto;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px}.card{overflow:hidden;border:1px solid #dfe4ec;border-radius:14px;background:#fff}.head{padding:19px;border-bottom:1px solid #e7ebf1}.title{font-size:18px;font-weight:800}.note{margin-top:6px;color:#758196;font-size:11px}.body{padding:17px}.status{padding:11px 13px;border-radius:9px;background:#edf3ff;color:#3869b4;font-size:11px}.servers{display:grid;gap:8px;margin-top:12px}.server{width:100%;display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px;border:1px solid #dfe5ee;border-radius:10px;background:#fff;text-align:left}.server:hover{border-color:#8db5f5}.icon{width:42px;height:42px;display:grid;place-items:center;border-radius:9px;background:#2f6fed;color:#fff;font-weight:800}.name{font-size:13px;font-weight:750}.url{margin-top:4px;color:#758196;font-size:10px}.tag{color:#16835d;font-size:10px}.empty{padding:30px;color:#8994a5;text-align:center;font-size:11px}.manual{display:flex;gap:8px;margin-top:13px}.input{min-width:0;flex:1;height:40px;padding:0 11px;border:1px solid #d8e0ea;border-radius:9px;outline:0}button{height:40px;padding:0 13px;border:1px solid #d8e0ea;border-radius:9px;background:#fff;color:#34435a;cursor:pointer}.primary{border-color:#2f6fed;background:#2f6fed;color:#fff;font-weight:700}.side-title{padding:17px;border-bottom:1px solid #e7ebf1;font-size:14px;font-weight:800}.option{display:flex;align-items:center;gap:12px;padding:15px 17px;border-bottom:1px solid #edf0f4}.copy{min-width:0;flex:1}.option-name{font-size:12px;font-weight:700}.option-note{margin-top:4px;color:#7a8698;font-size:9px;line-height:1.5}.switch{width:18px;height:18px;accent-color:#2f6fed}@media(max-width:720px){.shell{grid-template-columns:1fr}}</style></head><body>
 <header class="top"><img class="logo" src="{{LOGO}}"><span class="brand">LanChatGo 客户端</span><span class="version">v{{VERSION}}</span></header>
-<main class="shell"><section class="card"><div class="head"><div class="title">连接服务端</div><div class="note">启动时仅进行一次低频局域网广播发现，不逐个扫描 IP 或端口。</div></div><div class="body"><div id="status" class="status">正在准备…</div><div id="servers" class="servers"></div><form id="manual" class="manual"><input id="address" class="input" placeholder="例如 https://192.168.1.10"><button class="primary">连接</button><button id="scan" type="button">重新扫描</button></form></div></section>
+<main class="shell"><section class="card"><div class="head"><div class="title">内置服务端</div><div class="note">连接地址在编译时写入，启动后直接连接，不进行局域网探测，也不允许手动更改。</div></div><div class="body"><div id="status" class="status">正在连接内置服务端…</div><div class="server"><span class="icon">LC</span><span><span class="name">固定连接地址</span><span id="server-url" class="url"></span></span><button id="retry" class="primary" type="button">重新连接</button></div></div></section>
 <aside class="card"><div class="side-title">设置</div><label class="option"><span class="copy"><span class="option-name">开机自动启动</span><span class="option-note">登录 macOS 后自动启动客户端</span></span><input id="autoStart" class="switch" type="checkbox"></label><label class="option"><span class="copy"><span class="option-name">新消息通知</span><span class="option-note">使用 macOS 通知与 Dock 提醒</span></span><input id="notifications" class="switch" type="checkbox"></label></aside></main>
-<script>(function(){'use strict';var state,autoConnect={{AUTO_CONNECT}};function $(id){return document.getElementById(id)}function esc(v){return String(v||'').replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}function render(){if(!state)return;$('status').textContent=state.status||'等待操作';if(document.activeElement!==$('address'))$('address').value=state.serverUrl||'';$('autoStart').checked=!!state.autoStart;$('notifications').checked=!!state.notifications;var rows=(state.servers||[]).map(function(s){return'<button class="server" type="button" data-url="'+esc(s.url)+'"><span class="icon">LC</span><span><span class="name">'+esc(s.name||'LanChatGo')+' · v'+esc(s.version||'?')+'</span><span class="url">'+esc(s.url)+'</span></span><span class="tag">连接</span></button>'}).join('');$('servers').innerHTML=rows||'<div class="empty">暂未发现服务，可手动输入地址。</div>';$('servers').querySelectorAll('.server').forEach(function(b){b.onclick=function(){window.clientConnect(b.dataset.url).catch(alert)}})}async function refresh(){state=await window.clientGetState();render()}$('manual').onsubmit=function(e){e.preventDefault();window.clientConnect($('address').value).catch(function(e){alert(e.message||e)})};$('scan').onclick=async function(){state=await window.clientScan();render()};['autoStart','notifications'].forEach(function(k){$(k).onchange=async function(){try{state=await window.clientSetOption(k,$(k).checked);render()}catch(e){alert(e.message||e);refresh()}}});(async function(){await refresh();if(!autoConnect)return;if(state.serverUrl){window.clientConnect(state.serverUrl);return}state=await window.clientScan();render();if(state.servers&&state.servers.length===1)window.clientConnect(state.servers[0].url)})()})();</script></body></html>`
+<script>(function(){'use strict';var state;function $(id){return document.getElementById(id)}function render(){if(!state)return;$('status').textContent=state.status||'等待操作';$('server-url').textContent=state.serverUrl||'构建地址缺失';$('autoStart').checked=!!state.autoStart;$('notifications').checked=!!state.notifications}async function refresh(){state=await window.clientGetState();render()}$('retry').onclick=function(){window.clientRetry().catch(function(e){alert(e.message||e)})};['autoStart','notifications'].forEach(function(k){$(k).onchange=async function(){try{state=await window.clientSetOption(k,$(k).checked);render()}catch(e){alert(e.message||e);refresh()}}});refresh()})();</script></body></html>`
 	page = strings.ReplaceAll(page, "{{LOGO}}", logoURL)
 	page = strings.ReplaceAll(page, "{{VERSION}}", appinfo.Version)
-	return strings.ReplaceAll(page, "{{AUTO_CONNECT}}", fmt.Sprint(autoConnect))
+	return page
 }

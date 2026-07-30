@@ -5,10 +5,12 @@ import (
 	"time"
 )
 
-// ChatUser is the persistent identity attached to one canonical IP address.
-// Name is an optional user/admin supplied alias; IP remains the immutable ID.
+// ChatUser is the persistent chat profile attached to one registered account.
+// IP is retained as the serialized legacy field name, but now contains the
+// stable account ID. The real network address lives in Client.IP.
 type ChatUser struct {
 	IP          string         `json:"ip"`
+	Username    string         `json:"username,omitempty"`
 	Name        string         `json:"name,omitempty"`
 	Avatar      string         `json:"avatar,omitempty"`
 	Blacklisted bool           `json:"blacklisted,omitempty"`
@@ -17,8 +19,8 @@ type ChatUser struct {
 	Client      ChatClientInfo `json:"client"`
 }
 
-// ChatGroup is a user-created conversation. IP addresses remain the member
-// identities; the owner can rename or dissolve the group.
+// ChatGroup is a user-created conversation. Members are stable account IDs;
+// the owner can rename or dissolve the group.
 type ChatGroup struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
@@ -42,6 +44,8 @@ type ChatPublicGroup struct {
 // ChatPublicUser is the small, non-sensitive user record sent to browsers.
 type ChatPublicUser struct {
 	IP         string `json:"ip"`
+	Username   string `json:"username,omitempty"`
+	Address    string `json:"address,omitempty"`
 	Port       string `json:"port,omitempty"`
 	Name       string `json:"name"`
 	Alias      string `json:"alias,omitempty"`
@@ -55,8 +59,8 @@ type ChatPublicUser struct {
 	Me         bool   `json:"me,omitempty"`
 }
 
-// ChatRemark is a private contact name. Each browser IP owns its own remarks,
-// so changing a contact does not rename that person for everybody else.
+// ChatRemark is a private contact name. Each account owns its own remarks, so
+// changing a contact does not rename that person for everybody else.
 type ChatRemark struct {
 	OwnerIP  string    `json:"ownerIp"`
 	TargetIP string    `json:"targetIp"`
@@ -75,6 +79,8 @@ type AccessRecord struct {
 	ID        uint64    `json:"id"`
 	At        time.Time `json:"at"`
 	IP        string    `json:"ip"`
+	AccountID string    `json:"accountId,omitempty"`
+	Username  string    `json:"username,omitempty"`
 	Operation string    `json:"operation"`
 	Method    string    `json:"method,omitempty"`
 	Path      string    `json:"path,omitempty"`
@@ -208,4 +214,58 @@ type ChatReadPersistence interface {
 // ChatHistoryPersistence is an optional durable text-message search index.
 type ChatHistoryPersistence interface {
 	ListChatMessages(ChatHistoryQuery) (ChatHistoryPage, error)
+}
+
+type AccountStatus string
+
+const (
+	AccountStatusPending  AccountStatus = "pending"
+	AccountStatusActive   AccountStatus = "active"
+	AccountStatusRejected AccountStatus = "rejected"
+	AccountStatusDisabled AccountStatus = "disabled"
+)
+
+// Account is the durable login identity. PasswordHash is an Argon2id PHC
+// string and must never be returned by browser or administrator APIs.
+type Account struct {
+	ID           string        `json:"id"`
+	Username     string        `json:"username"`
+	PasswordHash string        `json:"passwordHash"`
+	Status       AccountStatus `json:"status"`
+	CreatedAt    time.Time     `json:"createdAt"`
+	UpdatedAt    time.Time     `json:"updatedAt"`
+	ApprovedAt   time.Time     `json:"approvedAt,omitempty"`
+	LastLoginAt  time.Time     `json:"lastLoginAt,omitempty"`
+	LastIP       string        `json:"lastIp,omitempty"`
+}
+
+type AccountSession struct {
+	TokenHash string    `json:"tokenHash"`
+	AccountID string    `json:"accountId"`
+	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	LastSeen  time.Time `json:"lastSeen"`
+	LastIP    string    `json:"lastIp,omitempty"`
+}
+
+type AccountSummary struct {
+	ID          string        `json:"id"`
+	Username    string        `json:"username"`
+	Status      AccountStatus `json:"status"`
+	CreatedAt   time.Time     `json:"createdAt"`
+	ApprovedAt  time.Time     `json:"approvedAt,omitempty"`
+	LastLoginAt time.Time     `json:"lastLoginAt,omitempty"`
+	LastIP      string        `json:"lastIp,omitempty"`
+}
+
+// AccountPersistence is an optional durable account/session extension.
+// Keeping it separate preserves small in-memory server tests.
+type AccountPersistence interface {
+	LoadAccounts() ([]Account, error)
+	SaveAccount(Account) error
+	DeleteAccount(string) error
+	LoadAccountSessions() ([]AccountSession, error)
+	SaveAccountSession(AccountSession) error
+	DeleteAccountSession(string) error
+	DeleteAccountSessions(string) error
 }

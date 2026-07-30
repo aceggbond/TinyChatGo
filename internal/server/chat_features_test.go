@@ -129,7 +129,8 @@ func TestPortalSettingsAndFluentEmojiPicker(t *testing.T) {
 		`id="settings-my-info"`,
 		`id="native-settings"`,
 		`id="web-settings"`,
-		`id="native-connect-form"`,
+		`id="native-server-address-note"`,
+		`.settings-row:has(#native-server-address-note){display:none!important}`,
 		`id="native-check-update"`,
 		`$('web-settings').hidden=nativeClient`,
 		`$('native-settings').hidden=!nativeClient`,
@@ -150,6 +151,18 @@ func TestPortalSettingsAndFluentEmojiPicker(t *testing.T) {
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("portal name/emoji controls missing %q", marker)
+		}
+	}
+	for _, removed := range []string{
+		`id="native-connect-form"`,
+		`id="native-server-address"`,
+		`id="native-scan-services"`,
+		"发现服务",
+		"window.clientConnect",
+		"window.clientScan",
+	} {
+		if strings.Contains(body, removed) {
+			t.Fatalf("portal still exposes editable client connection UI %q", removed)
 		}
 	}
 	if strings.Contains(body, `id="my-name-button"`) ||
@@ -174,7 +187,9 @@ func TestPortalChatRecordsAndContactContextActions(t *testing.T) {
 		`id="history-tab-image"`,
 		`data-history-kind="text">搜索聊天`,
 		`var contact=event.target.closest&&event.target.closest('.contact-item')`,
+		`item.label!=='发私信'`,
 		`label:'设置备注'`,
+		`button.ondblclick=function(){if(button.dataset.ip)openPrivateChat(button.dataset.ip)}`,
 		`label:'删除会话'`,
 		`'关闭消息提醒':'开启消息提醒'`,
 		`'取消置顶会话':'置顶会话'`,

@@ -37,9 +37,11 @@ const (
 	wmSize        = 5
 	wmContextMenu = 0x007B
 	wmSysCommand  = 0x0112
+	wmSysKeyDown  = 0x0104
 	wmClose       = 0x10
 	wmTray        = 0x8002
 	scClose       = 0xF060
+	vkF4          = 0x73
 
 	nimAdd             = 0
 	nimModify          = 1
