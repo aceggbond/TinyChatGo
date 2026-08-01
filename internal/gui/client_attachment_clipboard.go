@@ -38,7 +38,7 @@ func downloadClipboardAttachment(rawURL, rawName, serverURL string) (string, err
 	if err != nil {
 		return "", err
 	}
-	request.Header.Set("User-Agent", "LanChatGo-Client")
+	request.Header.Set("User-Agent", "TinyChatGo-Client")
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402 -- LAN servers may use the generated self-signed certificate.
 	}
@@ -65,7 +65,7 @@ func downloadClipboardAttachment(rawURL, rawName, serverURL string) (string, err
 		return "", errors.New("文件超过 1 GiB，无法复制")
 	}
 
-	directory, err := os.MkdirTemp("", "LanChatGo-Clipboard-*")
+	directory, err := os.MkdirTemp("", "TinyChatGo-Clipboard-*")
 	if err != nil {
 		return "", fmt.Errorf("创建剪贴板临时目录失败：%w", err)
 	}
@@ -96,7 +96,7 @@ func downloadClipboardAttachment(rawURL, rawName, serverURL string) (string, err
 func safeClipboardFileName(raw string) string {
 	name := strings.TrimSpace(filepath.Base(strings.ReplaceAll(raw, `\`, `/`)))
 	if name == "" || name == "." || name == string(filepath.Separator) {
-		name = "LanChatGo-附件"
+		name = "TinyChatGo-附件"
 	}
 	name = strings.Map(func(r rune) rune {
 		switch r {
@@ -111,7 +111,7 @@ func safeClipboardFileName(raw string) string {
 	}, name)
 	name = strings.TrimRight(name, ". ")
 	if name == "" {
-		return "LanChatGo-附件"
+		return "TinyChatGo-附件"
 	}
 	return name
 }

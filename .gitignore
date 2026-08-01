@@ -2,7 +2,7 @@
 *.exe
 *.exe~
 *.test
-/LanChatGo*.zip
+/TinyChatGo*.zip
 
 # Go build cache
 .gocache/
@@ -15,7 +15,7 @@ hfs-go-ca-key.pem
 hfs-go-cert.pem
 hfs-go-key.pem
 hfs-go.db
-lanchatgo.db
+tinychatgo.db
 chat_files/
 
 # Local tooling and screenshots

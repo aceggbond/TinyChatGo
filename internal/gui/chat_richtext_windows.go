@@ -15,7 +15,7 @@ import (
 	unicodeutf16 "unicode/utf16"
 	"unsafe"
 
-	"lanchatgo/internal/server"
+	"tinychatgo/internal/server"
 )
 
 var (

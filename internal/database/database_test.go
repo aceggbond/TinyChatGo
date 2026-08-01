@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"lanchatgo/internal/server"
+	"tinychatgo/internal/server"
 )
 
 func TestDatabasePersistsApplicationAndChatData(t *testing.T) {
@@ -166,7 +166,7 @@ func TestDatabasePersistsApplicationAndChatData(t *testing.T) {
 
 func TestChatAttachmentsDeduplicateBySHA256AndKeepSharedFileUntilLastReference(t *testing.T) {
 	root := t.TempDir()
-	store, err := Open(filepath.Join(root, "lanchatgo.db"))
+	store, err := Open(filepath.Join(root, "tinychatgo.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestChatAttachmentsDeduplicateBySHA256AndKeepSharedFileUntilLastReference(t
 }
 
 func TestDatabasePersistsChatReadReceipt(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "lanchatgo.db"))
+	store, err := Open(filepath.Join(t.TempDir(), "tinychatgo.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestDatabasePersistsChatReadReceipt(t *testing.T) {
 }
 
 func TestChatHistorySearchRespectsConversationVisibility(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "lanchatgo.db"))
+	store, err := Open(filepath.Join(t.TempDir(), "tinychatgo.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

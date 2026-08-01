@@ -24,13 +24,13 @@ import (
 	webview "github.com/jchv/go-webview2"
 	"golang.org/x/sys/windows/registry"
 
-	"lanchatgo/internal/appinfo"
+	"tinychatgo/internal/appinfo"
 )
 
 const (
-	clientInstanceMutexName   = `Local\LanChatGo.Client.SingleInstance.9D6D2D11`
-	clientInstanceReadyName   = `Local\LanChatGo.Client.Ready.9D6D2D11`
-	clientInstanceMessageName = `LanChatGo.Client.ActivateExisting.9D6D2D11`
+	clientInstanceMutexName   = `Local\TinyChatGo.Client.SingleInstance.9D6D2D11`
+	clientInstanceReadyName   = `Local\TinyChatGo.Client.Ready.9D6D2D11`
+	clientInstanceMessageName = `TinyChatGo.Client.ActivateExisting.9D6D2D11`
 
 	clientTrayShow      = 2201
 	clientTraySettings  = 2202
@@ -125,7 +125,7 @@ func RunClient(logo []byte) error {
 	if err != nil {
 		return fmt.Errorf("无法确定客户端配置目录：%w", err)
 	}
-	dataDir = filepath.Join(dataDir, "LanChatGo")
+	dataDir = filepath.Join(dataDir, "TinyChatGo")
 	if err = os.MkdirAll(dataDir, 0700); err != nil {
 		return fmt.Errorf("无法创建客户端配置目录：%w", err)
 	}
@@ -143,7 +143,7 @@ func RunClient(logo []byte) error {
 		DataPath:  filepath.Join(dataDir, "WebView2"),
 		AutoFocus: true,
 		WindowOptions: webview.WindowOptions{
-			Title:  "LanChatGo 客户端",
+			Title:  "TinyChatGo 客户端",
 			Width:  1180,
 			Height: 800,
 			IconId: modernIconResourceID,
@@ -351,7 +351,7 @@ func addClientAccessHeader(request *http.Request) {
 	if request == nil || appinfo.ClientAccessPassword == "" {
 		return
 	}
-	request.Header.Set("X-LanChatGo-Access-Password", appinfo.ClientAccessPassword)
+	request.Header.Set("X-TinyChatGo-Access-Password", appinfo.ClientAccessPassword)
 }
 
 const maxClientUpdateBytes = 256 << 20
@@ -361,7 +361,7 @@ func (c *desktopClientController) checkServerUpdate(address string) {
 	if err != nil {
 		return
 	}
-	request.Header.Set("User-Agent", "LanChatGo-Client/"+appinfo.Version)
+	request.Header.Set("User-Agent", "TinyChatGo-Client/"+appinfo.Version)
 	addClientAccessHeader(request)
 	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // #nosec G402 -- LAN servers may use the generated self-signed certificate.
 	response, err := (&http.Client{Transport: transport, Timeout: 10 * time.Second}).Do(request)
@@ -372,11 +372,11 @@ func (c *desktopClientController) checkServerUpdate(address string) {
 	if response.StatusCode >= http.StatusBadRequest {
 		return
 	}
-	version := strings.TrimSpace(response.Header.Get("X-LanChatGo-Version"))
+	version := strings.TrimSpace(response.Header.Get("X-TinyChatGo-Version"))
 	if version == "" || compareVersionNumbers(version, appinfo.Version) <= 0 {
 		return
 	}
-	download := strings.EqualFold(strings.TrimSpace(response.Header.Get("X-LanChatGo-Client-Download")), "true")
+	download := strings.EqualFold(strings.TrimSpace(response.Header.Get("X-TinyChatGo-Client-Download")), "true")
 	if !download {
 		return
 	}
@@ -396,7 +396,7 @@ func (c *desktopClientController) checkServerUpdate(address string) {
 	c.promptedUpdates[key] = struct{}{}
 	c.mu.Unlock()
 
-	title := utf16("发现 LanChatGo 客户端更新")
+	title := utf16("发现 TinyChatGo 客户端更新")
 	message := utf16(fmt.Sprintf(
 		"服务端版本 %s，高于当前客户端 %s。\r\n\r\n是否现在下载并自动重启客户端？",
 		version, appinfo.Version,
@@ -433,7 +433,7 @@ func (c *desktopClientController) checkUpdateNow() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	request.Header.Set("User-Agent", "LanChatGo-Client/"+appinfo.Version)
+	request.Header.Set("User-Agent", "TinyChatGo-Client/"+appinfo.Version)
 	addClientAccessHeader(request)
 	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // #nosec G402 -- LAN servers may use generated self-signed certificates.
 	response, err := (&http.Client{Transport: transport, Timeout: 10 * time.Second}).Do(request)
@@ -444,14 +444,14 @@ func (c *desktopClientController) checkUpdateNow() (string, error) {
 	if response.StatusCode >= http.StatusBadRequest {
 		return "", fmt.Errorf("服务端返回状态 %d", response.StatusCode)
 	}
-	version := strings.TrimSpace(response.Header.Get("X-LanChatGo-Version"))
+	version := strings.TrimSpace(response.Header.Get("X-TinyChatGo-Version"))
 	if version == "" {
 		return "服务端没有提供版本信息", nil
 	}
 	if compareVersionNumbers(version, appinfo.Version) <= 0 {
 		return "当前已是最新版 v" + appinfo.Version, nil
 	}
-	if !strings.EqualFold(strings.TrimSpace(response.Header.Get("X-LanChatGo-Client-Download")), "true") {
+	if !strings.EqualFold(strings.TrimSpace(response.Header.Get("X-TinyChatGo-Client-Download")), "true") {
 		return "发现 v" + version + "，但服务端未开启客户端下载", nil
 	}
 	key := strings.TrimRight(address, "/") + "|" + version
@@ -480,7 +480,7 @@ func (c *desktopClientController) downloadAndRestart(address, version string) er
 	if err != nil {
 		return err
 	}
-	request.Header.Set("User-Agent", "LanChatGo-Client/"+appinfo.Version)
+	request.Header.Set("User-Agent", "TinyChatGo-Client/"+appinfo.Version)
 	addClientAccessHeader(request)
 	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // #nosec G402 -- LAN servers may use the generated self-signed certificate.
 	response, err := (&http.Client{Transport: transport, Timeout: 3 * time.Minute}).Do(request)
@@ -498,7 +498,7 @@ func (c *desktopClientController) downloadAndRestart(address, version string) er
 	if err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(executable), ".lanchatgo-client-update-*.exe")
+	temp, err := os.CreateTemp(filepath.Dir(executable), ".tinychatgo-client-update-*.exe")
 	if err != nil {
 		return fmt.Errorf("创建更新临时文件失败：%w", err)
 	}
@@ -621,7 +621,7 @@ func desktopClientAutoStartEnabled() bool {
 		return false
 	}
 	defer key.Close()
-	value, _, err := key.GetStringValue("LanChatGoClient")
+	value, _, err := key.GetStringValue("TinyChatGoClient")
 	return err == nil && strings.TrimSpace(value) != ""
 }
 
@@ -632,7 +632,7 @@ func setDesktopClientAutoStart(enabled bool) error {
 	}
 	defer key.Close()
 	if !enabled {
-		err = key.DeleteValue("LanChatGoClient")
+		err = key.DeleteValue("TinyChatGoClient")
 		if errors.Is(err, registry.ErrNotExist) {
 			return nil
 		}
@@ -643,7 +643,7 @@ func setDesktopClientAutoStart(enabled bool) error {
 		return err
 	}
 	command := `"` + executable + `" --client --autostart`
-	return key.SetStringValue("LanChatGoClient", command)
+	return key.SetStringValue("TinyChatGoClient", command)
 }
 
 func (c *desktopClientController) notify(title, body, route, avatar string, mentioned, private bool) error {
@@ -840,7 +840,7 @@ func (c *desktopClientController) trayData() notifyIconData {
 	}
 	data := notifyIconData{Hwnd: c.hwnd, UID: 2, Flags: nifMessage | nifIcon | nifTip | nifShowTip, Callback: wmTray, Icon: icon}
 	data.Size = uint32(unsafe.Sizeof(data))
-	copyUTF16(data.Tip[:], "LanChatGo 客户端 - 双击显示，右击设置或退出")
+	copyUTF16(data.Tip[:], "TinyChatGo 客户端 - 双击显示，右击设置或退出")
 	return data
 }
 
@@ -852,7 +852,7 @@ func (c *desktopClientController) showTrayNotification(title, body, avatar strin
 	if !added {
 		return
 	}
-	// Use the LanChatGo icon instead of Windows' generic information icon.
+	// Use the TinyChatGo icon instead of Windows' generic information icon.
 	// Sound is played explicitly by notify so the user's sound preference is
 	// respected without the shell adding a second chime.
 	title = strings.Join(strings.Fields(title), " ")
@@ -875,14 +875,14 @@ func (c *desktopClientController) showTrayNotification(title, body, avatar strin
 		// the sender while the tray icon is restored immediately afterwards.
 		data.Icon = balloonIcon
 	}
-	data = trayNotificationData(data, "LanChatGo · "+title, body, niifUser|niifNoSound|niifLargeIcon, balloonIcon)
+	data = trayNotificationData(data, "TinyChatGo · "+title, body, niifUser|niifNoSound|niifLargeIcon, balloonIcon)
 	shown := showNotifyIconNotification(data)
 	if !shown && c.readdTray() {
 		data = c.trayData()
 		if customIcon {
 			data.Icon = balloonIcon
 		}
-		data = trayNotificationData(data, "LanChatGo · "+title, body, niifUser|niifNoSound|niifLargeIcon, balloonIcon)
+		data = trayNotificationData(data, "TinyChatGo · "+title, body, niifUser|niifNoSound|niifLargeIcon, balloonIcon)
 		shown = showNotifyIconNotification(data)
 	}
 	if customIcon {
@@ -1099,9 +1099,9 @@ func isClientKeyboardCloseCommand(message uint32, wParam, lParam uintptr) bool {
 }
 
 func renderDesktopClientHTML(logoDataURL string) string {
-	html := `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LanChatGo 客户端</title><style>
+	html := `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TinyChatGo 客户端</title><style>
 :root{font-family:Inter,"Segoe UI","Microsoft YaHei UI",sans-serif;color:#1d2737;background:#f3f5f8}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f3f5f8}.top{height:66px;display:flex;align-items:center;padding:0 26px;border-bottom:1px solid #dfe4ec;background:#fff}.logo{width:42px;height:42px;border-radius:10px}.brand{margin-left:11px;font-size:19px;font-weight:850}.version{margin-left:7px;padding:2px 7px;border-radius:99px;background:#edf3ff;color:#2f6fed;font-size:10px}.sub{margin-top:2px;color:#758196;font-size:10px}.shell{width:min(920px,calc(100% - 30px));margin:22px auto;display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:14px}.card{border:1px solid #dfe4ec;border-radius:13px;background:#fff}.head{padding:18px;border-bottom:1px solid #e7ebf1}.title{font-size:18px;font-weight:820}.note{margin-top:5px;color:#758196;font-size:11px;line-height:1.6}.body{padding:16px}.status{padding:11px 13px;border-radius:9px;background:#edf3ff;color:#3869b4;font-size:11px}.servers{display:grid;gap:8px;margin-top:12px}.server{width:100%;display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px;border:1px solid #dfe5ee;border-radius:10px;background:#fff;text-align:left;cursor:pointer}.server:hover{border-color:#8db5f5;background:#f7faff}.server-icon{width:42px;height:42px;display:grid;place-items:center;border-radius:9px;background:#2f6fed;color:#fff;font-weight:850}.server-name{font-size:13px;font-weight:780}.server-url{margin-top:4px;color:#758196;font-size:10px}.tag{padding:3px 7px;border-radius:99px;background:#eaf8f2;color:#16835d;font-size:9px}.empty{padding:32px 12px;color:#8994a5;text-align:center;font-size:11px}.manual{display:flex;gap:8px;margin-top:13px}.input{min-width:0;flex:1;height:40px;padding:0 11px;border:1px solid #d8e0ea;border-radius:9px;outline:0}.input:focus{border-color:#75a5f4;box-shadow:0 0 0 3px rgba(47,111,237,.1)}button{height:40px;padding:0 13px;border:1px solid #d8e0ea;border-radius:9px;background:#fff;color:#34435a;cursor:pointer}.primary{border-color:#2f6fed;background:#2f6fed;color:#fff;font-weight:750}.side-title{padding:16px 17px;border-bottom:1px solid #e7ebf1;font-size:14px;font-weight:800}.option{display:flex;align-items:center;gap:12px;min-height:62px;padding:10px 16px;border-bottom:1px solid #edf0f4}.option:last-child{border-bottom:0}.copy{min-width:0;flex:1}.option-name{font-size:12px;font-weight:740}.option-note{margin-top:4px;color:#7a8698;font-size:9px;line-height:1.45}.switch{position:relative;width:42px;height:23px}.switch input{position:absolute;opacity:0}.slider{position:absolute;inset:0;border-radius:99px;background:#cbd3de}.slider:after{content:"";position:absolute;left:3px;top:3px;width:17px;height:17px;border-radius:50%;background:#fff;box-shadow:0 2px 5px rgba(0,0,0,.15);transition:.15s}.switch input:checked+.slider{background:#2f6fed}.switch input:checked+.slider:after{transform:translateX(19px)}.tray-note{margin-top:14px;padding:13px;border-radius:10px;background:#fff8e7;color:#80661e;font-size:10px;line-height:1.6}@media(max-width:720px){.shell{grid-template-columns:1fr}.top{padding:0 15px}}</style></head><body>
-<header class="top"><img class="logo" src="{{LOGO}}" alt=""><div><div><span class="brand">LanChatGo 客户端</span><span class="version">v{{VERSION}}</span></div><div class="sub">固定服务端 · 原生托盘通知</div></div></header>
+<header class="top"><img class="logo" src="{{LOGO}}" alt=""><div><div><span class="brand">TinyChatGo 客户端</span><span class="version">v{{VERSION}}</span></div><div class="sub">固定服务端 · 原生托盘通知</div></div></header>
 <main class="shell"><section class="card"><div class="head"><div class="title">内置服务端</div><div class="note">客户端地址在编译时写入，启动后会直接连接，不进行局域网探测，也不允许手动更改。</div></div><div class="body"><div id="status" class="status">正在连接内置服务端…</div><div class="server"><span class="server-icon">LC</span><span><span class="server-name">固定连接地址</span><span id="server-url" class="server-url"></span></span><button id="retry" class="primary" type="button">重新连接</button></div></div></section>
 <aside><section class="card"><div class="side-title">设置</div><label class="option"><span class="copy"><span class="option-name">开机自动启动</span><span class="option-note">登录 Windows 后自动连接内置服务端</span></span><span class="switch"><input id="autoStart" type="checkbox"><span class="slider"></span></span></label><label class="option"><span class="copy"><span class="option-name">新消息通知</span><span class="option-note">使用系统托盘通知，不受浏览器通知权限限制</span></span><span class="switch"><input id="notifications" type="checkbox"><span class="slider"></span></span></label><label class="option"><span class="copy"><span class="option-name">通知声音</span><span class="option-note">收到新消息时播放 Windows 提示音</span></span><span class="switch"><input id="sound" type="checkbox"><span class="slider"></span></span></label></section><div class="tray-note">点击窗口 × 会隐藏到托盘，不会退出。右击托盘图标可调整通知或退出客户端。</div></aside></main>
 <script>(function(){'use strict';var state=null;function $(id){return document.getElementById(id)}function render(){if(!state)return;$('status').textContent=state.status||'等待操作';$('server-url').textContent=state.serverUrl||'构建地址缺失';['autoStart','notifications','sound'].forEach(function(k){$(k).checked=!!state[k]})}async function refresh(){try{state=await window.clientGetState();render()}catch(e){}}window.clientRefresh=refresh;$('retry').onclick=function(){window.clientRetry().catch(function(e){alert(e.message||e)})};['autoStart','notifications','sound'].forEach(function(k){$(k).onchange=function(){window.clientSetOption(k,$(k).checked).then(function(s){state=s;render()}).catch(function(e){alert(e.message||e);refresh()})}});refresh();setInterval(refresh,1000)})();</script></body></html>`

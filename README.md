@@ -1,69 +1,49 @@
-# LanChatGo
+# TinyChatGo
 
-LanChatGo 是一个完全独立的轻量、安全局域网聊天软件。`LanChatGoServer`（简称 **LCGS**）负责服务控制、用户管理和历史归档；局域网用户可通过浏览器或独立桌面客户端聊天、发送文件和管理个人资料。
+TinyChatGo 是轻量、安全的互联网聊天与文件分享系统。`TinyChatGoServer`（简称 **TCGS**）负责账号、权限、群聊和历史归档管理；用户登录后可通过浏览器、Windows 客户端或 macOS ARM64 客户端使用。
 
-[下载 LanChatGo v2.2.0](https://github.com/aceggbond/LanChatGo/releases/tag/v2.2.0) · [Releases](https://github.com/aceggbond/LanChatGo/releases) · [项目地址](https://github.com/aceggbond/LanChatGo)
+[下载 TinyChatGo v1.0.0](https://github.com/aceggbond/TinyChatGo/releases/tag/v1.0.0) · [Releases](https://github.com/aceggbond/TinyChatGo/releases) · [项目主页](https://github.com/aceggbond/TinyChatGo)
 
 ## 主要功能
 
-- 基于 WebSocket/WSS 的实时私信与自建群聊，不再创建固定系统群。
-- 支持用户发起私有群聊：创建者选择成员，成员可退出，群主可解散；群聊消息、文件和图片归档彼此隔离。
-- 会话可置顶或取消置顶；置顶会话优先显示，其他会话按最新消息自动前移。
-- 使用用户名和密码注册、登录；IP 仅作为连接地址和审计元数据，不再作为账号身份。用户名注册后不可重复使用。
-- LCGS 可选启用独立的 Web 访问密码；网页先完成访问验证，再进入账号登录。桌面客户端可在编译时内置同一密码并自动验证。
-- 管理员可在设置中开启“新用户审批”；开启后新账号先进入待审批状态，批准后才能登录，也可以拒绝、禁用或删除账号。
-- 登录会话使用 HttpOnly 安全 Cookie 保存，密码仅以 Argon2id 哈希写入数据库，不保存明文密码。
-- 支持上传并压缩个人头像，头像与用户资料一起持久化；静音会话会显示头像角标。
-- 群聊支持 `@用户`，右击成员头像、名字或用户列表即可快速插入提醒。
-- 聊天文本自动识别 HTTP/HTTPS 链接；支持保留格式并可一键复制的代码块。
-- 内置 Microsoft Fluent 3D 动态表情资源和骰子小游戏，骰子点数由服务端随机生成。
-- 会话中心与在线用户分组，未读消息数量、闪烁提示、浏览器通知和声音提醒。
-- 提供独立 Windows 客户端：完整复用网页版聊天功能，服务地址在编译时写入，并支持开机启动、可靠的原生托盘通知和独立声音开关。
-- 客户端关闭窗口后驻留托盘；右击托盘图标可以显示窗口、调整通知或彻底退出。
-- 私信支持未读/已读状态；只有接收方实际打开对应私信且页面可见时才会标记已读，群聊不使用已读回执。
-- 每个聊天窗口可单独开启或关闭消息提醒，全局浏览器提醒也可以随时关闭。
-- 支持长文本、常用表情以及粘贴或拖拽图片和文件；附件会先进入待发送区，确认发送后才会上传。
-- 图片可放大预览，并支持切换上一张/下一张。
-- 用户发送的文件和图片自动归档，可按名称、发送人、IP、日期和类型搜索，并分页浏览。
-- 图片最大 100 MiB，普通文件最大 1 GiB；上传显示实时进度。
-- 消息发送后 2 分钟内可以撤回，聊天记录按批次加载，减少长会话卡顿。
-- 管理端只负责服务控制：独立管理在线/全部用户、群聊成员、群名称、成员剔除、群聊解散、黑名单和历史归档。
-- 支持选择网卡地址、HTTP/HTTPS 监听（默认 80/443）、自动生成证书和 HTTP 自动跳转 HTTPS。
-- 配置、账号、登录会话、用户资料、访问记录、聊天记录、归档索引及证书统一保存到程序目录的 `lanchatgo.db`。
+- 用户名和密码注册、登录，密码使用 Argon2id 哈希保存，登录状态使用 HttpOnly Cookie。
+- 可选“新用户需要管理员审批”，后台可批准、拒绝、禁用、删除账号及重置用户密码。
+- 可选 Web 首层访问密码；桌面客户端可以在编译时内置服务端地址和访问密码。
+- 实时私信和自建群聊，支持群主管理、成员退出、会话置顶、静音、未读数、已读回执和两分钟内撤回。
+- 支持头像、备注、`@用户`、超链接确认跳转、代码块、Microsoft Fluent 3D 表情和骰子。
+- 支持粘贴或拖入图片/文件，附件进入待发送区后再确认发送；图片最大 100 MiB，普通文件最大 1 GiB。
+- 图片支持放大、前后切换、滚轮缩放和 `Esc` 退出；聊天文本、图片和文件均支持右键复制。
+- 文件和图片自动归档、搜索和分页；附件使用 SHA-256 去重，相同内容只保存一份。
+- Windows 客户端支持开机启动、托盘驻留、声音、任务栏及托盘闪烁、带发送人头像的通知。
+- macOS ARM64 客户端支持菜单栏驻留、系统通知、自签名 HTTPS 和原生文件选择。
+- 支持 HTTP/HTTPS、自动生成证书、HTTP 跳转 HTTPS，以及可信代理、X-Forwarded-For 和 PROXY Protocol v1/v2。
+- 配置、账号、会话、聊天记录、归档索引和证书统一保存在 `tinychatgo.db`。
 
 ## 界面预览
 
-### LCGS Windows 服务端
+### TCGS 服务端
 
-![LCGS Windows 服务端](show1.png)
+![TinyChatGo 服务端](show1.png)
 
 ### 浏览器聊天端
 
-![LanChatGo 浏览器聊天端](show2.png)
+![TinyChatGo 浏览器聊天端](show2.png)
 
 ## 使用
 
-1. 从 [Releases](https://github.com/aceggbond/LanChatGo/releases) 下载并运行 `LanChatGoServer.exe`。
-2. 在“设置”中选择监听地址，按需配置 HTTP/HTTPS 端口、是否要求管理员审批、私信和群聊权限。
-3. 启动服务后，点击管理端显示的蓝色地址复制访问链接，并发送给用户。
-4. 用户首次访问时注册账号并登录；如果开启了审批，需要等待管理员批准。
+1. 从 [Releases](https://github.com/aceggbond/TinyChatGo/releases) 下载并运行 `TinyChatGoServer.exe`。
+2. 在设置中选择监听地址和 HTTP/HTTPS 端口，并配置注册审批、群聊、私信、客户端下载及可信代理。
+3. 启动服务，将显示的访问地址提供给用户。
+4. 用户注册并登录后即可聊天；开启审批时，需要管理员批准新账号。
 
-`Alt+F4` 会退出程序；点击窗口右上角关闭按钮会最小化到系统托盘。程序使用 `logo.png` 作为窗口、托盘和浏览器图标。
+`Alt+F4` 会退出服务端；点击窗口关闭按钮会隐藏到系统托盘。程序使用 `logo.png` 作为窗口、托盘和浏览器图标。
 
-### 桌面客户端
+## 数据与部署
 
-1. 管理端在“设置 → 网络与访问”中开启“允许下载桌面客户端”。
-2. 服务启动后，网页会根据浏览器平台自动提供 Windows x64 或 macOS ARM64 客户端；在客户端内不会重复显示下载按钮。
-3. 客户端服务地址在编译时写入，启动后直接连接，不再进行局域网探测，也不提供手动地址输入。
-4. 客户端可设置开机自动启动和原生消息通知；Windows 客户端同时支持提示声音。客户端会自动接受局域网服务端生成的 HTTPS 证书。
-5. Windows 点击窗口 `×` 仅隐藏到托盘，右击托盘选择“退出客户端”才会完全退出；macOS 点击 `×` 隐藏窗口，可从菜单栏图标重新显示或退出。
-
-## 数据与安全
-
-- `lanchatgo.db` 不存在时会自动创建，配置、用户和消息记录均由 LanChatGo 独立管理。
-- 聊天附件保存在 `chat_files/`，按日期创建子目录。
-- 被禁用或加入黑名单的账号会被拒绝访问、上传、下载和建立聊天连接。
-- HTTPS 证书直接保存到数据库，重新生成会覆盖旧证书，不再生成散落的证书文件。
+- `tinychatgo.db` 不存在时会自动创建；聊天附件保存在 `chat_files/`。
+- 互联网部署应启用 HTTPS，并设置足够强的 Web 访问密码与账号密码。
+- 经过 FRP 或反向代理时，在服务端填写可信代理 IP/CIDR；HTTP 代理可传递 `X-Forwarded-For`，TCP 映射可启用 PROXY Protocol v1/v2。
+- `internal/appinfo/appinfo.go` 中的 `ClientServerURL` 和 `ClientAccessPassword` 会编译进桌面客户端。
 
 ## 从源码构建
 
@@ -71,17 +51,19 @@ LanChatGo 是一个完全独立的轻量、安全局域网聊天软件。`LanCha
 
 ```powershell
 go test ./...
-go build -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o LanChatGoServer.exe .
-go build -tags client -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o LanChatGo-Client-windows-amd64.exe .
+go build -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o TinyChatGoServer.exe .
+go build -tags client -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o TinyChatGo-Client-windows-amd64.exe .
 ```
 
-Windows 服务端与客户端共享聊天协议和界面资源，但使用独立构建标签：客户端不会携带数据库、归档管理和服务端控制代码。客户端会直接连接源码中固定的 `https://192.168.100.100`，不进行局域网探测，也不提供手动修改地址的入口。推送版本标签后会生成 `LanChatGoServer.exe`、`LanChatGo-Client-windows-amd64.exe` 和 `LanChatGo-Client-macos-arm64.zip`。
+推送版本标签后，GitHub Actions 会构建：
 
-如需让客户端自动通过 Web 首层验证，请在编译发布前将 `internal/appinfo/appinfo.go` 中的 `ClientAccessPassword` 设置为与服务端相同的密码；留空则客户端仍可打开网页验证页，由用户手动输入。
+- `TinyChatGoServer.exe`
+- `TinyChatGo-Client-windows-amd64.exe`
+- `TinyChatGo-Client-macos-arm64.zip`
 
-## 项目与支持
+## 项目地址
 
-项目地址：https://github.com/aceggbond/LanChatGo
+https://github.com/aceggbond/TinyChatGo
 
 <p align="center">
   <img src="dashang.png" width="260" alt="打赏作者二维码">

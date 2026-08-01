@@ -121,11 +121,11 @@ static void LCGConfigureClient(void *windowPtr, const void *logoBytes, int logoL
   }
 
   NSMenu *mainMenu = [NSMenu new];
-  NSMenuItem *appMenuItem = [[NSMenuItem alloc] initWithTitle:@"LanChatGo"
+  NSMenuItem *appMenuItem = [[NSMenuItem alloc] initWithTitle:@"TinyChatGo"
                                                        action:nil
                                                 keyEquivalent:@""];
-  NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"LanChatGo"];
-  [appMenu addItemWithTitle:@"退出 LanChatGo" action:@selector(terminate:) keyEquivalent:@"q"];
+  NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"TinyChatGo"];
+  [appMenu addItemWithTitle:@"退出 TinyChatGo" action:@selector(terminate:) keyEquivalent:@"q"];
   appMenuItem.submenu = appMenu;
   [mainMenu addItem:appMenuItem];
 
@@ -152,9 +152,9 @@ static void LCGConfigureClient(void *windowPtr, const void *logoBytes, int logoL
     image.template = NO;
     lcgStatusItem.button.image = image;
   }
-  lcgStatusItem.button.toolTip = @"LanChatGo 客户端";
+  lcgStatusItem.button.toolTip = @"TinyChatGo 客户端";
   NSMenu *menu = [NSMenu new];
-  NSMenuItem *showItem = [[NSMenuItem alloc] initWithTitle:@"显示 LanChatGo"
+  NSMenuItem *showItem = [[NSMenuItem alloc] initWithTitle:@"显示 TinyChatGo"
                                                    action:@selector(showWindow:)
                                             keyEquivalent:@""];
   showItem.target = lcgClientDelegate;
@@ -169,7 +169,7 @@ static void LCGConfigureClient(void *windowPtr, const void *logoBytes, int logoL
 }
 
 static void LCGNotify(const char *titleText, const char *bodyText) {
-  NSString *title = titleText ? [NSString stringWithUTF8String:titleText] : @"LanChatGo";
+  NSString *title = titleText ? [NSString stringWithUTF8String:titleText] : @"TinyChatGo";
   NSString *body = bodyText ? [NSString stringWithUTF8String:bodyText] : @"";
   dispatch_async(dispatch_get_main_queue(), ^{
     BOOL foreground = [NSApp isActive] && [NSApp keyWindow] != nil;
@@ -224,7 +224,7 @@ static int LCGCopyFile(const char *pathValue) {
   return [pasteboard writeObjects:@[fileURL]];
 }
 
-static void LCGSetUnread(int total) {
+static void TCGSetUnread(int total) {
   dispatch_async(dispatch_get_main_queue(), ^{
     if (lcgStatusItem != nil) {
       lcgStatusItem.button.title = total > 0 ? [NSString stringWithFormat:@" %d", total] : @"";
@@ -256,7 +256,7 @@ import (
 
 	webview "github.com/webview/webview_go"
 
-	"lanchatgo/internal/appinfo"
+	"tinychatgo/internal/appinfo"
 )
 
 type darwinClientSettings struct {
@@ -283,7 +283,7 @@ type darwinClientController struct {
 }
 
 func Run(_, _ []byte) error {
-	return errors.New("macOS 版本仅提供 LanChatGo 客户端")
+	return errors.New("macOS 版本仅提供 TinyChatGo 客户端")
 }
 
 func RunClient(logo []byte) error {
@@ -291,7 +291,7 @@ func RunClient(logo []byte) error {
 	if err != nil {
 		return fmt.Errorf("无法确定客户端配置目录：%w", err)
 	}
-	configDir = filepath.Join(configDir, "LanChatGo")
+	configDir = filepath.Join(configDir, "TinyChatGo")
 	if err = os.MkdirAll(configDir, 0700); err != nil {
 		return fmt.Errorf("无法创建客户端配置目录：%w", err)
 	}
@@ -308,7 +308,7 @@ func RunClient(logo []byte) error {
 		return errors.New("无法创建 macOS 客户端窗口")
 	}
 	defer view.Destroy()
-	view.SetTitle("LanChatGo 客户端")
+	view.SetTitle("TinyChatGo 客户端")
 	view.SetSize(1180, 800, webview.HintNone)
 
 	controller := &darwinClientController{
@@ -509,7 +509,7 @@ func (c *darwinClientController) notify(title, body, _, _ string, _, _ bool) err
 }
 
 func (c *darwinClientController) updateUnread(total int, _ string) {
-	C.LCGSetUnread(C.int(total))
+	C.TCGSetUnread(C.int(total))
 }
 
 func (c *darwinClientController) openPortalSettings() error {
@@ -530,7 +530,7 @@ func (c *darwinClientController) checkUpdateNow() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	request.Header.Set("User-Agent", "LanChatGo-Client/"+appinfo.Version)
+	request.Header.Set("User-Agent", "TinyChatGo-Client/"+appinfo.Version)
 	addDarwinClientAccessHeader(request)
 	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // #nosec G402 -- generated LAN certificates are self-signed.
 	response, err := (&http.Client{Transport: transport, Timeout: 10 * time.Second}).Do(request)
@@ -538,7 +538,7 @@ func (c *darwinClientController) checkUpdateNow() (string, error) {
 		return "", fmt.Errorf("无法连接服务端检查更新：%w", err)
 	}
 	response.Body.Close()
-	version := strings.TrimSpace(response.Header.Get("X-LanChatGo-Version"))
+	version := strings.TrimSpace(response.Header.Get("X-TinyChatGo-Version"))
 	if version == "" || compareVersionNumbers(version, appinfo.Version) <= 0 {
 		return "当前已是最新版 v" + appinfo.Version, nil
 	}
@@ -549,7 +549,7 @@ func addDarwinClientAccessHeader(request *http.Request) {
 	if request == nil || appinfo.ClientAccessPassword == "" {
 		return
 	}
-	request.Header.Set("X-LanChatGo-Access-Password", appinfo.ClientAccessPassword)
+	request.Header.Set("X-TinyChatGo-Access-Password", appinfo.ClientAccessPassword)
 }
 
 func darwinClientLaunchAgentPath() string {
@@ -557,7 +557,7 @@ func darwinClientLaunchAgentPath() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, "Library", "LaunchAgents", "com.aceggbond.LanChatGo.plist")
+	return filepath.Join(home, "Library", "LaunchAgents", "com.aceggbond.TinyChatGo.plist")
 }
 
 func darwinClientAutoStartEnabled() bool {
@@ -590,7 +590,7 @@ func setDarwinClientAutoStart(enabled bool) error {
 	plist := `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>Label</key><string>com.aceggbond.LanChatGo</string>
+<key>Label</key><string>com.aceggbond.TinyChatGo</string>
 <key>ProgramArguments</key><array><string>` + html.EscapeString(executable) + `</string><string>--client</string><string>--autostart</string></array>
 <key>RunAtLoad</key><true/>
 </dict></plist>`
@@ -598,9 +598,9 @@ func setDarwinClientAutoStart(enabled bool) error {
 }
 
 func renderDarwinClientHTML(logoURL string) string {
-	page := `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LanChatGo 客户端</title><style>
+	page := `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TinyChatGo 客户端</title><style>
 :root{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;color:#1d2737;background:#f3f5f8}*{box-sizing:border-box}body{margin:0}.top{height:70px;display:flex;align-items:center;padding:0 28px;border-bottom:1px solid #dfe4ec;background:#fff}.logo{width:44px;height:44px;border-radius:11px}.brand{margin-left:12px;font-size:20px;font-weight:800}.version{margin-left:8px;padding:2px 7px;border-radius:99px;background:#edf3ff;color:#2f6fed;font-size:10px}.shell{width:min(940px,calc(100% - 32px));margin:24px auto;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px}.card{overflow:hidden;border:1px solid #dfe4ec;border-radius:14px;background:#fff}.head{padding:19px;border-bottom:1px solid #e7ebf1}.title{font-size:18px;font-weight:800}.note{margin-top:6px;color:#758196;font-size:11px}.body{padding:17px}.status{padding:11px 13px;border-radius:9px;background:#edf3ff;color:#3869b4;font-size:11px}.servers{display:grid;gap:8px;margin-top:12px}.server{width:100%;display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:10px;padding:10px;border:1px solid #dfe5ee;border-radius:10px;background:#fff;text-align:left}.server:hover{border-color:#8db5f5}.icon{width:42px;height:42px;display:grid;place-items:center;border-radius:9px;background:#2f6fed;color:#fff;font-weight:800}.name{font-size:13px;font-weight:750}.url{margin-top:4px;color:#758196;font-size:10px}.tag{color:#16835d;font-size:10px}.empty{padding:30px;color:#8994a5;text-align:center;font-size:11px}.manual{display:flex;gap:8px;margin-top:13px}.input{min-width:0;flex:1;height:40px;padding:0 11px;border:1px solid #d8e0ea;border-radius:9px;outline:0}button{height:40px;padding:0 13px;border:1px solid #d8e0ea;border-radius:9px;background:#fff;color:#34435a;cursor:pointer}.primary{border-color:#2f6fed;background:#2f6fed;color:#fff;font-weight:700}.side-title{padding:17px;border-bottom:1px solid #e7ebf1;font-size:14px;font-weight:800}.option{display:flex;align-items:center;gap:12px;padding:15px 17px;border-bottom:1px solid #edf0f4}.copy{min-width:0;flex:1}.option-name{font-size:12px;font-weight:700}.option-note{margin-top:4px;color:#7a8698;font-size:9px;line-height:1.5}.switch{width:18px;height:18px;accent-color:#2f6fed}@media(max-width:720px){.shell{grid-template-columns:1fr}}</style></head><body>
-<header class="top"><img class="logo" src="{{LOGO}}"><span class="brand">LanChatGo 客户端</span><span class="version">v{{VERSION}}</span></header>
+<header class="top"><img class="logo" src="{{LOGO}}"><span class="brand">TinyChatGo 客户端</span><span class="version">v{{VERSION}}</span></header>
 <main class="shell"><section class="card"><div class="head"><div class="title">内置服务端</div><div class="note">连接地址在编译时写入，启动后直接连接，不进行局域网探测，也不允许手动更改。</div></div><div class="body"><div id="status" class="status">正在连接内置服务端…</div><div class="server"><span class="icon">LC</span><span><span class="name">固定连接地址</span><span id="server-url" class="url"></span></span><button id="retry" class="primary" type="button">重新连接</button></div></div></section>
 <aside class="card"><div class="side-title">设置</div><label class="option"><span class="copy"><span class="option-name">开机自动启动</span><span class="option-note">登录 macOS 后自动启动客户端</span></span><input id="autoStart" class="switch" type="checkbox"></label><label class="option"><span class="copy"><span class="option-name">新消息通知</span><span class="option-note">使用 macOS 通知与 Dock 提醒</span></span><input id="notifications" class="switch" type="checkbox"></label></aside></main>
 <script>(function(){'use strict';var state;function $(id){return document.getElementById(id)}function render(){if(!state)return;$('status').textContent=state.status||'等待操作';$('server-url').textContent=state.serverUrl||'构建地址缺失';$('autoStart').checked=!!state.autoStart;$('notifications').checked=!!state.notifications}async function refresh(){state=await window.clientGetState();render()}$('retry').onclick=function(){window.clientRetry().catch(function(e){alert(e.message||e)})};['autoStart','notifications'].forEach(function(k){$(k).onchange=async function(){try{state=await window.clientSetOption(k,$(k).checked);render()}catch(e){alert(e.message||e);refresh()}}});refresh()})();</script></body></html>`

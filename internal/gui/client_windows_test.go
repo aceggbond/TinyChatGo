@@ -45,7 +45,7 @@ func TestClientTrayAlertIconCanBeCreatedFromProjectLogo(t *testing.T) {
 	}
 	icon := createClientTrayAlertIcon(logo)
 	if icon == 0 {
-		t.Fatal("CreateIconFromResourceEx could not create the red LanChatGo tray icon")
+		t.Fatal("CreateIconFromResourceEx could not create the red TinyChatGo tray icon")
 	}
 	clientDestroyIcon.Call(icon)
 }

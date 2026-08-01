@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	singleInstanceMutexName      = `Local\LanChatGoServer.SingleInstance.4A7D3219`
-	singleInstanceReadyEventName = `Local\LanChatGoServer.SingleInstanceReady.4A7D3219`
-	singleInstanceMessageName    = `LanChatGoServer.ActivateExisting.4A7D3219`
+	singleInstanceMutexName      = `Local\TinyChatGoServer.SingleInstance.4A7D3219`
+	singleInstanceReadyEventName = `Local\TinyChatGoServer.SingleInstanceReady.4A7D3219`
+	singleInstanceMessageName    = `TinyChatGoServer.ActivateExisting.4A7D3219`
 
 	errorAlreadyExists = syscall.Errno(183)
 	hwndBroadcast      = 0xffff

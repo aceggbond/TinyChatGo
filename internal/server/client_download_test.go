@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"lanchatgo/internal/appinfo"
+	"tinychatgo/internal/appinfo"
 )
 
 func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
@@ -17,10 +17,10 @@ func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
 	recorder := httptest.NewRecorder()
 	s.ServeHTTP(recorder, request)
-	if got := recorder.Header().Get("X-LanChatGo-Version"); got != appinfo.Version {
+	if got := recorder.Header().Get("X-TinyChatGo-Version"); got != appinfo.Version {
 		t.Fatalf("server version header = %q, want %q", got, appinfo.Version)
 	}
-	if got := recorder.Header().Get("X-LanChatGo-Client-Download"); got != "false" {
+	if got := recorder.Header().Get("X-TinyChatGo-Client-Download"); got != "false" {
 		t.Fatalf("disabled client-download header = %q", got)
 	}
 	if !strings.Contains(recorder.Body.String(), `id="client-download"`) ||
@@ -38,7 +38,7 @@ func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
 	s.SetClientDownloadEnabled(true)
 	recorder = httptest.NewRecorder()
 	s.ServeHTTP(recorder, request)
-	if got := recorder.Header().Get("X-LanChatGo-Client-Download"); got != "true" {
+	if got := recorder.Header().Get("X-TinyChatGo-Client-Download"); got != "true" {
 		t.Fatalf("enabled client-download header = %q", got)
 	}
 	body := recorder.Body.String()
@@ -61,7 +61,7 @@ func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
 	if downloadRecorder.Code != http.StatusTemporaryRedirect {
 		t.Fatalf("enabled download status = %d", downloadRecorder.Code)
 	}
-	wantDownload := "https://github.com/aceggbond/LanChatGo/releases/download/" + appinfo.Tag + "/LanChatGo-Client-windows-amd64.exe"
+	wantDownload := "https://github.com/aceggbond/TinyChatGo/releases/download/" + appinfo.Tag + "/TinyChatGo-Client-windows-amd64.exe"
 	if got := downloadRecorder.Header().Get("Location"); got != wantDownload {
 		t.Fatalf("Windows client redirect = %q, want %q", got, wantDownload)
 	}
@@ -97,7 +97,7 @@ func TestClientDownloadDetectsMacOSAndUsesArm64Release(t *testing.T) {
 	if recorder.Code != http.StatusTemporaryRedirect {
 		t.Fatalf("macOS download status = %d", recorder.Code)
 	}
-	want := "https://github.com/aceggbond/LanChatGo/releases/download/" + appinfo.Tag + "/LanChatGo-Client-macos-arm64.zip"
+	want := "https://github.com/aceggbond/TinyChatGo/releases/download/" + appinfo.Tag + "/TinyChatGo-Client-macos-arm64.zip"
 	if got := recorder.Header().Get("Location"); got != want {
 		t.Fatalf("macOS redirect = %q, want %q", got, want)
 	}

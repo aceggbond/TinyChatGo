@@ -44,7 +44,7 @@ func (s Service) PreferredURL() string {
 	return (&url.URL{Scheme: scheme, Host: net.JoinHostPort(s.Host, strconv.Itoa(port))}).String()
 }
 
-// StartResponder listens for the single LanChatGo discovery datagram. Failure
+// StartResponder listens for the single TinyChatGo discovery datagram. Failure
 // to bind this optional port should be logged by the server but must not stop
 // HTTP/HTTPS service startup.
 func StartResponder(ctx context.Context, provider func() Service) error {
@@ -137,7 +137,7 @@ func ScanCClass(ctx context.Context, wait time.Duration) ([]Service, error) {
 		service.Host = remote.IP.String()
 		service.Magic = ""
 		if service.Name == "" {
-			service.Name = "LanChatGo"
+			service.Name = "TinyChatGo"
 		}
 		key := net.JoinHostPort(service.Host, strconv.Itoa(service.HTTPPort))
 		services[key] = service

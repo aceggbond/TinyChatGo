@@ -13,12 +13,12 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"lanchatgo/internal/database"
-	"lanchatgo/internal/server"
+	"tinychatgo/internal/database"
+	"tinychatgo/internal/server"
 )
 
 func TestRegisteredAccountApprovalLoginAndPersistence(t *testing.T) {
-	store, err := database.Open(filepath.Join(t.TempDir(), "lanchatgo.db"))
+	store, err := database.Open(filepath.Join(t.TempDir(), "tinychatgo.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestRegisteredAccountApprovalLoginAndPersistence(t *testing.T) {
 	}
 	body, _ := io.ReadAll(response.Body)
 	_ = response.Body.Close()
-	if response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("登录 · LanChatGo")) {
+	if response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("登录 · TinyChatGo")) {
 		t.Fatalf("anonymous root = %d %q", response.StatusCode, body)
 	}
 
@@ -142,7 +142,7 @@ func TestRegisteredAccountApprovalLoginAndPersistence(t *testing.T) {
 }
 
 func TestAdministratorPasswordResetRevokesExistingSessions(t *testing.T) {
-	store, err := database.Open(filepath.Join(t.TempDir(), "lanchatgo.db"))
+	store, err := database.Open(filepath.Join(t.TempDir(), "tinychatgo.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

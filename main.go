@@ -6,7 +6,7 @@ import (
 	_ "embed"
 	"log"
 
-	"lanchatgo/internal/gui"
+	"tinychatgo/internal/gui"
 )
 
 //go:embed logo.png

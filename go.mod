@@ -1,4 +1,4 @@
-module lanchatgo
+module tinychatgo
 
 go 1.20
 

@@ -224,7 +224,7 @@ func TestChatCodeAndServerGeneratedDiceMessages(t *testing.T) {
 	defer conn.Close()
 	_ = readChatWire(t, conn)
 
-	const code = "func main() {\n\tprintln(\"LanChatGo\")\n}"
+	const code = "func main() {\n\tprintln(\"TinyChatGo\")\n}"
 	if err = conn.WriteJSON(chatClientMessage{
 		Type: "message",
 		Kind: ChatMessageKindCode,

@@ -1,11 +1,11 @@
 package appinfo
 
 const (
-	Name            = "LanChatGo"
-	ServerName      = "LanChatGoServer"
-	ServerShortName = "LCGS"
-	Version         = "2.2.0"
-	Tag             = "v2.2.0"
+	Name            = "TinyChatGo"
+	ServerName      = "TinyChatGoServer"
+	ServerShortName = "TCGS"
+	Version         = "1.0.0"
+	Tag             = "v1.0.0"
 )
 
 // ClientServerURL is deliberately compiled into the desktop clients. Keep this
@@ -17,4 +17,4 @@ const ClientServerURL = "https://39.97.183.32:5630"
 // submitted on the server's optional first-layer Web access page. Keep it
 // empty when the server does not enable that gate; releases that protect the
 // built-in server should set this to the same value as the server setting.
-const ClientAccessPassword = "wahaha"
+const ClientAccessPassword = ""

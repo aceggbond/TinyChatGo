@@ -193,7 +193,7 @@ func TestPortalChatRecordsAndContactContextActions(t *testing.T) {
 		`label:'删除会话'`,
 		`'关闭消息提醒':'开启消息提醒'`,
 		`'取消置顶会话':'置顶会话'`,
-		`hiddenSessions=loadObject('lanchatgo-hidden-sessions')`,
+		`hiddenSessions=loadObject('tinychatgo-hidden-sessions')`,
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("portal chat records/contact action missing %q", marker)

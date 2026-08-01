@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-const settingsFileName = "lanchatgo.config"
+const settingsFileName = "tinychatgo.config"
 
 type persistedSettings struct {
 	Password               string `json:"password"`
@@ -71,7 +71,7 @@ func savePersistedSettings(filename string, settings persistedSettings) error {
 		return err
 	}
 	dir := filepath.Dir(filename)
-	tmp, err := os.CreateTemp(dir, ".lanchatgo.config-*")
+	tmp, err := os.CreateTemp(dir, ".tinychatgo.config-*")
 	if err != nil {
 		return err
 	}

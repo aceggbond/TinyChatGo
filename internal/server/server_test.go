@@ -20,7 +20,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"lanchatgo/internal/appinfo"
+	"tinychatgo/internal/appinfo"
 )
 
 func TestBrowseDownloadAndRange(t *testing.T) {

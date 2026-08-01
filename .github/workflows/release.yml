@@ -1,4 +1,4 @@
-name: Release LanChatGo desktop builds
+name: Release TinyChatGo desktop builds
 
 on:
   push:
@@ -34,18 +34,18 @@ jobs:
         run: |
           go run ./cmd/iconbuild
           go install github.com/akavel/rsrc@v0.10.2
-          & (Join-Path (go env GOPATH) "bin\rsrc.exe") -arch amd64 -ico lanchatgo.ico -o rsrc_windows_amd64.syso
-          Remove-Item -LiteralPath lanchatgo.ico -Force
-          go build -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o LanChatGoServer.exe .
-          go build -tags client -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o LanChatGo-Client-windows-amd64.exe .
+          & (Join-Path (go env GOPATH) "bin\rsrc.exe") -arch amd64 -ico tinychatgo.ico -o rsrc_windows_amd64.syso
+          Remove-Item -LiteralPath tinychatgo.ico -Force
+          go build -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o TinyChatGoServer.exe .
+          go build -tags client -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -o TinyChatGo-Client-windows-amd64.exe .
 
       - name: Upload Windows release files
         uses: actions/upload-artifact@v7
         with:
           name: windows-release
           path: |
-            LanChatGoServer.exe
-            LanChatGo-Client-windows-amd64.exe
+            TinyChatGoServer.exe
+            TinyChatGo-Client-windows-amd64.exe
 
   macos:
     runs-on: macos-14
@@ -72,10 +72,10 @@ jobs:
           CGO_CXXFLAGS: "-arch arm64"
           CGO_LDFLAGS: "-arch arm64"
         run: |
-          APP="LanChatGo-Client.app"
+          APP="TinyChatGo-Client.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          go build -tags client -trimpath -buildvcs=false -ldflags "-s -w" -o "$APP/Contents/MacOS/LanChatGo-Client" .
-          ICONSET="LanChatGo.iconset"
+          go build -tags client -trimpath -buildvcs=false -ldflags "-s -w" -o "$APP/Contents/MacOS/TinyChatGo-Client" .
+          ICONSET="TinyChatGo.iconset"
           mkdir -p "$ICONSET"
           sips -z 16 16 logo.png --out "$ICONSET/icon_16x16.png"
           sips -z 32 32 logo.png --out "$ICONSET/icon_16x16@2x.png"
@@ -87,31 +87,31 @@ jobs:
           sips -z 512 512 logo.png --out "$ICONSET/icon_256x256@2x.png"
           sips -z 512 512 logo.png --out "$ICONSET/icon_512x512.png"
           sips -z 1024 1024 logo.png --out "$ICONSET/icon_512x512@2x.png"
-          iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/LanChatGo.icns"
+          iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/TinyChatGo.icns"
           cat > "$APP/Contents/Info.plist" <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
-            <key>CFBundleDisplayName</key><string>LanChatGo</string>
-            <key>CFBundleExecutable</key><string>LanChatGo-Client</string>
-            <key>CFBundleIdentifier</key><string>com.aceggbond.LanChatGo</string>
-            <key>CFBundleName</key><string>LanChatGo</string>
+            <key>CFBundleDisplayName</key><string>TinyChatGo</string>
+            <key>CFBundleExecutable</key><string>TinyChatGo-Client</string>
+            <key>CFBundleIdentifier</key><string>com.aceggbond.TinyChatGo</string>
+            <key>CFBundleName</key><string>TinyChatGo</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>2.2.0</string>
-            <key>CFBundleVersion</key><string>2.2.0</string>
-            <key>CFBundleIconFile</key><string>LanChatGo.icns</string>
+            <key>CFBundleShortVersionString</key><string>1.0.0</string>
+            <key>CFBundleVersion</key><string>1.0.0</string>
+            <key>CFBundleIconFile</key><string>TinyChatGo.icns</string>
             <key>LSMinimumSystemVersion</key><string>11.0</string>
             <key>NSHighResolutionCapable</key><true/>
           </dict></plist>
           PLIST
           codesign --force --deep --sign - "$APP"
-          ditto -c -k --sequesterRsrc --keepParent "$APP" LanChatGo-Client-macos-arm64.zip
+          ditto -c -k --sequesterRsrc --keepParent "$APP" TinyChatGo-Client-macos-arm64.zip
 
       - name: Upload macOS release file
         uses: actions/upload-artifact@v7
         with:
           name: macos-release
-          path: LanChatGo-Client-macos-arm64.zip
+          path: TinyChatGo-Client-macos-arm64.zip
 
   release:
     needs: [windows, macos]
@@ -128,9 +128,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           files=(
-            dist/LanChatGoServer.exe
-            dist/LanChatGo-Client-windows-amd64.exe
-            dist/LanChatGo-Client-macos-arm64.zip
+            dist/TinyChatGoServer.exe
+            dist/TinyChatGo-Client-windows-amd64.exe
+            dist/TinyChatGo-Client-macos-arm64.zip
           )
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" "${files[@]}" \
@@ -139,6 +139,6 @@ jobs:
           else
             gh release create "${GITHUB_REF_NAME}" "${files[@]}" \
               --repo "${GITHUB_REPOSITORY}" \
-              --title "LanChatGo ${GITHUB_REF_NAME}" \
+              --title "TinyChatGo ${GITHUB_REF_NAME}" \
               --generate-notes
           fi

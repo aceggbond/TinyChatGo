@@ -20,7 +20,7 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	"lanchatgo/internal/server"
+	"tinychatgo/internal/server"
 )
 
 var (
@@ -1139,7 +1139,7 @@ func (d *DB) recreateBucket(name []byte) error {
 }
 
 func (d *DB) writeAttachmentStream(message server.ChatMessage, reader io.Reader, maxBytes int64) (string, int64, string, bool, error) {
-	temp, err := os.CreateTemp(d.attachmentRoot, ".lanchatgo-chat-*")
+	temp, err := os.CreateTemp(d.attachmentRoot, ".tinychatgo-chat-*")
 	if err != nil {
 		return "", 0, "", false, err
 	}

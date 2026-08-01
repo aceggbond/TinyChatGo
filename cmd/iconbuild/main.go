@@ -32,7 +32,7 @@ func main() {
 		images = append(images, encoded.Bytes())
 	}
 
-	output, err := os.Create("lanchatgo.ico")
+	output, err := os.Create("tinychatgo.ico")
 	if err != nil {
 		panic(err)
 	}
@@ -72,7 +72,7 @@ func main() {
 			panic(err)
 		}
 	}
-	fmt.Printf("generated lanchatgo.ico from logo.png with %d sizes\n", len(images))
+	fmt.Printf("generated tinychatgo.ico from logo.png with %d sizes\n", len(images))
 }
 
 func downsample(source image.Image, width, height int) *image.NRGBA {

@@ -431,7 +431,7 @@ func newChatHub() *chatHub {
 
 // SetUserGroupCreationEnabled controls whether browsers may create private
 // multi-user groups. The legacy built-in group remains only for the native
-// compatibility API and is never exposed by the LanChatGo portal.
+// compatibility API and is never exposed by the TinyChatGo portal.
 func (s *Server) SetUserGroupCreationEnabled(enabled bool) {
 	s.chat.mu.Lock()
 	s.chat.groupCreate = enabled
@@ -571,7 +571,7 @@ func (s *Server) ChatEnabled() bool {
 }
 
 // SetGroupChatEnabled is retained for configuration compatibility. The
-// LanChatGo desktop host enables the system group and never exposes the
+// TinyChatGo desktop host enables the system group and never exposes the
 // administrator-chat mode; embedders may still select the legacy mode.
 func (s *Server) SetGroupChatEnabled(enabled bool) {
 	s.chat.setGroupEnabled(enabled)

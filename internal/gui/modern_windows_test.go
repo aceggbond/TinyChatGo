@@ -15,8 +15,8 @@ import (
 	"time"
 	"unsafe"
 
-	"lanchatgo/internal/database"
-	"lanchatgo/internal/server"
+	"tinychatgo/internal/database"
+	"tinychatgo/internal/server"
 )
 
 func TestModernControllerSettingsAndServerLifecycle(t *testing.T) {

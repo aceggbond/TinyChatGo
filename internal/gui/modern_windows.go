@@ -25,8 +25,8 @@ import (
 
 	webview "github.com/jchv/go-webview2"
 
-	"lanchatgo/internal/database"
-	"lanchatgo/internal/server"
+	"tinychatgo/internal/database"
+	"tinychatgo/internal/server"
 )
 
 // rsrc stores the icon group at resource ID 1. ID 2 is the individual image
@@ -143,7 +143,7 @@ func Run(logo, donation []byte) error {
 	baseDir := filepath.Dir(executable)
 	settingsPath := filepath.Join(baseDir, settingsFileName)
 	sharesPath := filepath.Join(baseDir, "hfsgo.json")
-	databasePath := filepath.Join(baseDir, "lanchatgo.db")
+	databasePath := filepath.Join(baseDir, "tinychatgo.db")
 	legacyDatabasePath := filepath.Join(baseDir, "hfs-go.db")
 	if _, statErr := os.Stat(databasePath); errors.Is(statErr, os.ErrNotExist) {
 		if _, legacyErr := os.Stat(legacyDatabasePath); legacyErr == nil {
@@ -240,10 +240,10 @@ func Run(logo, donation []byte) error {
 
 	view := webview.NewWithOptions(webview.WebViewOptions{
 		Debug:     false,
-		DataPath:  filepath.Join(os.TempDir(), "lanchatgo-webview2"),
+		DataPath:  filepath.Join(os.TempDir(), "tinychatgo-webview2"),
 		AutoFocus: true,
 		WindowOptions: webview.WindowOptions{
-			Title:  "LCGS - LanChatGoServer",
+			Title:  "TCGS - TinyChatGoServer",
 			Width:  1240,
 			Height: 820,
 			IconId: modernIconResourceID,

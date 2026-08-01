@@ -19,7 +19,7 @@ import (
 	unicodeutf16 "unicode/utf16"
 	"unsafe"
 
-	"lanchatgo/internal/server"
+	"tinychatgo/internal/server"
 )
 
 type HWND uintptr
@@ -400,7 +400,7 @@ func runLegacy() error {
 	if r, _, e := registerClass.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
 		return e
 	}
-	title := utf16("LanChatGoServer (LCGS) - 局域网聊天服务")
+	title := utf16("TinyChatGoServer (TCGS) - 互联网聊天服务")
 	h, _, e := createWindow.Call(0, uintptr(unsafe.Pointer(&cls[0])), uintptr(unsafe.Pointer(&title[0])), wsOverlappedWindow|wsVisible, 100, 60, 1020, 760, 0, 0, inst, 0)
 	if h == 0 {
 		return e
@@ -648,8 +648,8 @@ func splitterProc(hwnd uintptr, m uint32, w, l uintptr) uintptr {
 }
 
 func createControls(parent HWND) {
-	app.title = control(parent, "STATIC", "LanChatGo", wsVisible|wsChild, 30, 20, 280, 38, 0)
-	app.subtitle = control(parent, "STATIC", "LanChatGo 独立局域网聊天服务", wsVisible|wsChild, 30, 60, 360, 24, 0)
+	app.title = control(parent, "STATIC", "TinyChatGo", wsVisible|wsChild, 30, 20, 280, 38, 0)
+	app.subtitle = control(parent, "STATIC", "TinyChatGo 互联网聊天与文件分享", wsVisible|wsChild, 30, 60, 360, 24, 0)
 	app.status = control(parent, "STATIC", "●  服务未启动", wsVisible|wsChild|ssNotify, 30, 94, 400, 25, idStatus)
 	app.addressLabel = control(parent, "STATIC", "访问地址", wsVisible|wsChild, 330, 35, 65, 22, 0)
 	app.address = control(parent, "COMBOBOX", "", wsVisible|wsChild|wsVScroll|wsTabStop|cbsDropDownList|cbsHasStrings, 400, 29, 270, 240, idAddress)
@@ -1861,7 +1861,7 @@ func getText(h HWND) string {
 	return syscall.UTF16ToString(b)
 }
 func alert(s string) {
-	t, m := utf16("LanChatGo"), utf16(s)
+	t, m := utf16("TinyChatGo"), utf16(s)
 	messageBox.Call(uintptr(app.hwnd), uintptr(unsafe.Pointer(&m[0])), uintptr(unsafe.Pointer(&t[0])), 0x10)
 }
 func utf16(s string) []uint16 { return syscall.StringToUTF16(sanitizeDisplay(s)) }
@@ -1908,7 +1908,7 @@ func trayData() notifyIconData {
 	}
 	n := notifyIconData{Hwnd: uintptr(app.hwnd), UID: 1, Flags: nifMessage | nifIcon | nifTip | nifShowTip, Callback: wmTray, Icon: icon}
 	n.Size = uint32(unsafe.Sizeof(n))
-	copyUTF16(n.Tip[:], "LCGS - 双击显示，右击打开菜单")
+	copyUTF16(n.Tip[:], "TCGS - 双击显示，右击打开菜单")
 	return n
 }
 
@@ -2033,7 +2033,7 @@ func trayNotificationData(base notifyIconData, title, body string, infoFlags uin
 	title = strings.Join(strings.Fields(title), " ")
 	body = strings.Join(strings.Fields(body), " ")
 	if title == "" {
-		title = "LCGS"
+		title = "TCGS"
 	}
 	copyUTF16(base.InfoTitle[:], title)
 	copyUTF16(base.Info[:], body)
@@ -2068,7 +2068,7 @@ func showTrayMenu() {
 	for _, x := range []struct {
 		id   uintptr
 		text string
-	}{{idTrayShow, "显示 LCGS"}, {idTrayOpen, "打开 LanChatGo 网页"}, {idTrayExit, "退出 LCGS"}} {
+	}{{idTrayShow, "显示 TCGS"}, {idTrayOpen, "打开 TinyChatGo 网页"}, {idTrayExit, "退出 TCGS"}} {
 		u := utf16(x.text)
 		appendMenu.Call(menu, 0, x.id, uintptr(unsafe.Pointer(&u[0])))
 	}

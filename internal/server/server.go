@@ -23,8 +23,8 @@ import (
 	"time"
 	"unicode"
 
-	"lanchatgo/internal/appinfo"
-	"lanchatgo/internal/discovery"
+	"tinychatgo/internal/appinfo"
+	"tinychatgo/internal/discovery"
 )
 
 type Share struct {
@@ -488,7 +488,7 @@ func (s *Server) StartWithHTTPS(httpAddr, httpsAddr, certFile, keyFile string) (
 }
 
 // StartWithHTTPSPEM starts HTTPS directly from certificate bytes. It allows
-// the desktop application to keep all certificate material in lanchatgo.db
+// the desktop application to keep all certificate material in tinychatgo.db
 // without creating temporary or persistent certificate files.
 func (s *Server) StartWithHTTPSPEM(httpAddr, httpsAddr string, certPEM, keyPEM []byte) (ListenAddresses, error) {
 	s.lifecycleMu.Lock()
@@ -704,16 +704,16 @@ func (s *Server) serveClientDownload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "client executable unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	filename := "LanChatGo-Client-windows-amd64.exe"
+	filename := "TinyChatGo-Client-windows-amd64.exe"
 	contentType := "application/vnd.microsoft.portable-executable"
 	downloadPath := filepath.Join(filepath.Dir(executable), filename)
 	if platform == "macos-arm64" {
-		filename = "LanChatGo-Client-macos-arm64.zip"
+		filename = "TinyChatGo-Client-macos-arm64.zip"
 		contentType = "application/zip"
 		downloadPath = filepath.Join(filepath.Dir(executable), filename)
 	}
 	if info, statErr := os.Stat(downloadPath); statErr != nil || !info.Mode().IsRegular() {
-		releaseURL := "https://github.com/aceggbond/LanChatGo/releases/download/" + appinfo.Tag + "/" + filename
+		releaseURL := "https://github.com/aceggbond/TinyChatGo/releases/download/" + appinfo.Tag + "/" + filename
 		http.Redirect(w, r, releaseURL, http.StatusTemporaryRedirect)
 		return
 	}
@@ -755,13 +755,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.handlerWG.Done()
-	w.Header().Set("X-LanChatGo-Version", appinfo.Version)
+	w.Header().Set("X-TinyChatGo-Version", appinfo.Version)
 	// Keep the old header for clients that still use it to detect the server.
 	w.Header().Set("X-HFS-Go-Version", appinfo.Version)
 	s.mu.RLock()
 	clientDownloadEnabled := s.allowClientDownload
 	s.mu.RUnlock()
-	w.Header().Set("X-LanChatGo-Client-Download", strconv.FormatBool(clientDownloadEnabled))
+	w.Header().Set("X-TinyChatGo-Client-Download", strconv.FormatBool(clientDownloadEnabled))
 	w.Header().Set("Accept-CH", "Sec-CH-UA, Sec-CH-UA-Platform, Sec-CH-UA-Platform-Version")
 	start := time.Now()
 	status := 200
@@ -851,7 +851,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if password != "" && s.webAccessRequired(r) {
 			_, pass, ok := r.BasicAuth()
 			if !ok || pass != password {
-				w.Header().Set("WWW-Authenticate", `Basic realm="LanChatGo"`)
+				w.Header().Set("WWW-Authenticate", `Basic realm="TinyChatGo"`)
 				http.Error(lw, "需要访问密码", http.StatusUnauthorized)
 				return
 			}
@@ -1546,7 +1546,7 @@ func (s *Server) renderRoot(w http.ResponseWriter, r *http.Request) {
 	chatEnabled := s.ChatEnabled()
 	userList := chatEnabled && s.UserListEnabled()
 	filesEnabled := upload || download
-	s.render(w, r, pageData{Title: "LanChatGo - 聊天与文件分享", Entries: es, Upload: rootUpload, Query: r.URL.Query().Get("q"), CanUpload: upload, UploadHint: hint, Chat: chatEnabled, Files: filesEnabled, UserList: userList, PrivateChat: userList && s.PrivateMessagesEnabled(), GroupChat: s.GroupChatEnabled(), ClientDownload: s.ClientDownloadEnabled(), LayoutClass: portalLayoutClass(filesEnabled, userList, chatEnabled)})
+	s.render(w, r, pageData{Title: "TinyChatGo - 聊天与文件分享", Entries: es, Upload: rootUpload, Query: r.URL.Query().Get("q"), CanUpload: upload, UploadHint: hint, Chat: chatEnabled, Files: filesEnabled, UserList: userList, PrivateChat: userList && s.PrivateMessagesEnabled(), GroupChat: s.GroupChatEnabled(), ClientDownload: s.ClientDownloadEnabled(), LayoutClass: portalLayoutClass(filesEnabled, userList, chatEnabled)})
 }
 func (s *Server) renderDir(w http.ResponseWriter, r *http.Request, dir, title string) {
 	list, err := os.ReadDir(dir)
@@ -1647,7 +1647,7 @@ browser UI is portalTemplate in portal.go.
 @media(max-width:900px){html,body{height:auto}body{overflow:auto}.portal-grid{height:auto;min-height:0;grid-template-columns:1fr}.workspace-card{min-height:620px}.top-chip{display:none}.file-panel{max-height:760px}.chat-panel{height:720px}}
 @media(max-width:560px){.topbar{height:68px;padding:0 13px}.brand-logo{width:40px;height:40px}.brand-name{font-size:18px}.portal-grid{width:calc(100% - 20px);margin:10px auto;gap:10px}.workspace-card{border-radius:14px}.section-head{min-height:68px;padding:12px}.tools{align-items:stretch}.tools form{width:100%}.tools form:first-child{flex-basis:auto}.tools input{flex:1}.row{grid-template-columns:minmax(0,1fr) auto}.row .size,.row .modified{display:none}.upload-drop{flex-direction:column}.chat-form{grid-template-columns:1fr}.chat-form>button{width:100%}}
 </style></head><body>
-<header class="topbar"><div class="brand"><img class="brand-logo" src="/__hfs/logo.png" alt="LanChatGo"><div><div class="brand-name">LanChatGo <span class="brand-version">v{{.Version}}</span></div><div class="brand-sub">局域网聊天与文件分享</div></div></div><div class="top-chip">服务已连接</div></header>
+<header class="topbar"><div class="brand"><img class="brand-logo" src="/__hfs/logo.png" alt="TinyChatGo"><div><div class="brand-name">TinyChatGo <span class="brand-version">v{{.Version}}</span></div><div class="brand-sub">互联网聊天与文件分享</div></div></div><div class="top-chip">服务已连接</div></header>
 <main class="portal-grid">
 <section class="workspace-card file-panel" aria-label="共享文件">
 <div class="section-head"><div class="section-icon">▤</div><div class="section-copy"><div class="section-title">共享文件</div><div class="section-subtitle">{{.Title}}</div></div></div>

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"lanchatgo/internal/appinfo"
+	"tinychatgo/internal/appinfo"
 )
 
 func TestCompactLogoKeepsModernHTMLBelowWebViewLimit(t *testing.T) {
@@ -126,8 +126,8 @@ func TestModernImageViewerNativeDropAndAboutPage(t *testing.T) {
 		`id="native-drop-zone"`,
 		`window.hfsSetDropZone(`,
 		`版本 {{VERSION}}`,
-		`这是一个轻量、安全的局域网文件分享与聊天系统`,
-		`https://github.com/aceggbond/LanChatGo`,
+		`TinyChatGo 是一款轻量、安全的互联网聊天软件`,
+		`https://github.com/aceggbond/TinyChatGo`,
 		`id="check-update"`,
 		`window.hfsCheckUpdate()`,
 		`src="{{DONATION}}"`,

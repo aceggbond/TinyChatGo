@@ -56,7 +56,7 @@ func TestWebAccessPasswordGateUsesCookieAndEmbeddedHeader(t *testing.T) {
 	// A plain client does not retain cookies, so the embedded header remains
 	// the native client's fallback authentication mechanism.
 	request, _ = http.NewRequest(http.MethodGet, ts.URL+"/__hfs/chat/status", nil)
-	request.Header.Set("X-LanChatGo-Access-Password", "web-secret")
+	request.Header.Set("X-TinyChatGo-Access-Password", "web-secret")
 	response, err = jarClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
