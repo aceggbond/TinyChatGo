@@ -141,6 +141,48 @@ func TestRegisteredAccountApprovalLoginAndPersistence(t *testing.T) {
 	}
 }
 
+func TestAdministratorPasswordResetRevokesExistingSessions(t *testing.T) {
+	store, err := database.Open(filepath.Join(t.TempDir(), "lanchatgo.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	s := server.New(io.Discard)
+	if err = s.SetPersistence(store); err != nil {
+		t.Fatal(err)
+	}
+	s.SetAccountApprovalRequired(false)
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+	if got := authJSON(t, client, ts.URL, "/__auth/register", "reset_user", "old-password"); got.status != http.StatusCreated {
+		t.Fatalf("register = %#v", got)
+	}
+	accounts := s.Accounts()
+	if len(accounts) != 1 {
+		t.Fatalf("accounts = %#v", accounts)
+	}
+	if err = s.SetAccountPassword(accounts[0].ID, "new-password"); err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Get(ts.URL + "/__hfs/chat/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old session status = %d", response.StatusCode)
+	}
+	if got := authJSON(t, client, ts.URL, "/__auth/login", "reset_user", "old-password"); got.status != http.StatusUnauthorized {
+		t.Fatalf("old password login = %#v", got)
+	}
+	if got := authJSON(t, client, ts.URL, "/__auth/login", "reset_user", "new-password"); got.status != http.StatusOK {
+		t.Fatalf("new password login = %#v", got)
+	}
+}
+
 type authResult struct {
 	status        int
 	pending       bool

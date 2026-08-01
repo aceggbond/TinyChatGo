@@ -2,7 +2,9 @@ package database
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -21,14 +24,15 @@ import (
 )
 
 var (
-	bucketApp         = []byte("app")
-	bucketUsers       = []byte("users")
-	bucketRemarks     = []byte("remarks")
-	bucketMessages    = []byte("messages")
-	bucketAttachments = []byte("attachments")
-	bucketAccess      = []byte("access")
-	bucketAccounts    = []byte("accounts")
-	bucketSessions    = []byte("account-sessions")
+	bucketApp              = []byte("app")
+	bucketUsers            = []byte("users")
+	bucketRemarks          = []byte("remarks")
+	bucketMessages         = []byte("messages")
+	bucketAttachments      = []byte("attachments")
+	bucketAttachmentHashes = []byte("attachment-hashes")
+	bucketAccess           = []byte("access")
+	bucketAccounts         = []byte("accounts")
+	bucketSessions         = []byte("account-sessions")
 
 	keySettings = []byte("settings")
 	keyShares   = []byte("shares")
@@ -43,6 +47,12 @@ type DB struct {
 	db             *bolt.DB
 	path           string
 	attachmentRoot string
+	attachmentMu   sync.Mutex
+}
+
+type attachmentHashRecord struct {
+	Path     string `json:"path"`
+	RefCount uint64 `json:"refCount"`
 }
 
 // CertificateBundle keeps the local CA and current HTTPS leaf certificate in
@@ -75,7 +85,7 @@ func Open(path string) (*DB, error) {
 		attachmentRoot: filepath.Join(filepath.Dir(absolute), "chat_files"),
 	}
 	if err = raw.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bucketApp, bucketUsers, bucketRemarks, bucketMessages, bucketAttachments, bucketAccess, bucketAccounts, bucketSessions} {
+		for _, name := range [][]byte{bucketApp, bucketUsers, bucketRemarks, bucketMessages, bucketAttachments, bucketAttachmentHashes, bucketAccess, bucketAccounts, bucketSessions} {
 			if _, createErr := tx.CreateBucketIfNotExists(name); createErr != nil {
 				return createErr
 			}
@@ -443,14 +453,20 @@ func (d *DB) SaveChatAttachment(conversationID string, message server.ChatMessag
 			stored.FileName = "聊天图片.jpg"
 		}
 	}
-	relative, size, err := d.writeAttachmentStream(stored, reader, maxBytes)
+	d.attachmentMu.Lock()
+	defer d.attachmentMu.Unlock()
+	relative, size, contentHash, created, err := d.writeAttachmentStream(stored, reader, maxBytes)
 	if err != nil {
 		return stored, err
 	}
 	stored.AttachmentPath = relative
+	stored.AttachmentHash = contentHash
 	stored.FileSize = size
 	stored.Data = nil
-	createdPath, _ := d.resolveAttachment(relative)
+	createdPath := ""
+	if created {
+		createdPath, _ = d.resolveAttachment(relative)
+	}
 	return d.saveStoredChatMessage(conversationID, stored, createdPath)
 }
 
@@ -469,7 +485,24 @@ func (d *DB) saveStoredChatMessage(conversationID string, stored server.ChatMess
 			return err
 		}
 		if stored.AttachmentPath != "" {
-			return tx.Bucket(bucketAttachments).Put([]byte(stored.ID), raw)
+			if err := tx.Bucket(bucketAttachments).Put([]byte(stored.ID), raw); err != nil {
+				return err
+			}
+			if stored.AttachmentHash != "" {
+				hashes := tx.Bucket(bucketAttachmentHashes)
+				record := attachmentHashRecord{Path: stored.AttachmentPath}
+				if existing := hashes.Get([]byte(stored.AttachmentHash)); existing != nil {
+					if err := json.Unmarshal(existing, &record); err != nil {
+						return err
+					}
+				}
+				record.RefCount++
+				encoded, err := json.Marshal(record)
+				if err != nil {
+					return err
+				}
+				return hashes.Put([]byte(stored.AttachmentHash), encoded)
+			}
 		}
 		return nil
 	})
@@ -482,18 +515,65 @@ func (d *DB) saveStoredChatMessage(conversationID string, stored server.ChatMess
 	return stored, nil
 }
 
+func releaseAttachmentReference(tx *bolt.Tx, message server.ChatMessage) (string, error) {
+	if message.AttachmentPath == "" {
+		return "", nil
+	}
+	if message.AttachmentHash != "" {
+		hashes := tx.Bucket(bucketAttachmentHashes)
+		if raw := hashes.Get([]byte(message.AttachmentHash)); raw != nil {
+			var record attachmentHashRecord
+			if err := json.Unmarshal(raw, &record); err != nil {
+				return "", err
+			}
+			if record.RefCount > 1 {
+				record.RefCount--
+				encoded, err := json.Marshal(record)
+				if err != nil {
+					return "", err
+				}
+				return "", hashes.Put([]byte(message.AttachmentHash), encoded)
+			}
+			if err := hashes.Delete([]byte(message.AttachmentHash)); err != nil {
+				return "", err
+			}
+			if record.Path != "" {
+				return record.Path, nil
+			}
+		}
+	}
+	// Compatibility for attachments created before content hashes were added.
+	// Do not remove a legacy file while another message still references it.
+	attachments := tx.Bucket(bucketAttachments)
+	cursor := attachments.Cursor()
+	for _, raw := cursor.First(); raw != nil; _, raw = cursor.Next() {
+		var other server.StoredChatMessage
+		if json.Unmarshal(raw, &other) == nil && other.Message.ID != message.ID &&
+			other.Message.AttachmentPath == message.AttachmentPath {
+			return "", nil
+		}
+	}
+	return message.AttachmentPath, nil
+}
+
 func (d *DB) DeleteChatMessage(messageID string) error {
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {
 		return nil
 	}
+	d.attachmentMu.Lock()
+	defer d.attachmentMu.Unlock()
 	var attachmentPath string
 	err := d.db.Update(func(tx *bolt.Tx) error {
 		attachments := tx.Bucket(bucketAttachments)
 		if raw := attachments.Get([]byte(messageID)); raw != nil {
 			var item server.StoredChatMessage
 			if json.Unmarshal(raw, &item) == nil {
-				attachmentPath = item.Message.AttachmentPath
+				var releaseErr error
+				attachmentPath, releaseErr = releaseAttachmentReference(tx, item.Message)
+				if releaseErr != nil {
+					return releaseErr
+				}
 			}
 			if err := attachments.Delete([]byte(messageID)); err != nil {
 				return err
@@ -525,6 +605,8 @@ func (d *DB) RecallChatMessage(messageID string, recalledAt time.Time) (server.S
 	if recalledAt.IsZero() {
 		recalledAt = time.Now().UTC()
 	}
+	d.attachmentMu.Lock()
+	defer d.attachmentMu.Unlock()
 	var recalled server.StoredChatMessage
 	var attachmentPath string
 	err := d.db.Update(func(tx *bolt.Tx) error {
@@ -543,7 +625,11 @@ func (d *DB) RecallChatMessage(messageID string, recalledAt time.Time) (server.S
 		if len(foundKey) == 0 {
 			return os.ErrNotExist
 		}
-		attachmentPath = recalled.Message.AttachmentPath
+		var releaseErr error
+		attachmentPath, releaseErr = releaseAttachmentReference(tx, recalled.Message)
+		if releaseErr != nil {
+			return releaseErr
+		}
 		recalled.Message.Recalled = true
 		recalled.Message.RecalledAt = recalledAt
 		recalled.Message.Text = ""
@@ -553,6 +639,7 @@ func (d *DB) RecallChatMessage(messageID string, recalledAt time.Time) (server.S
 		recalled.Message.FileSize = 0
 		recalled.Message.FileURL = ""
 		recalled.Message.AttachmentPath = ""
+		recalled.Message.AttachmentHash = ""
 		raw, err := json.Marshal(recalled)
 		if err != nil {
 			return err
@@ -634,6 +721,8 @@ func (d *DB) MarkChatMessagesRead(messageIDs []string, readAt time.Time) error {
 }
 
 func (d *DB) DeleteChatConversation(conversationID string) error {
+	d.attachmentMu.Lock()
+	defer d.attachmentMu.Unlock()
 	paths := make([]string, 0)
 	err := d.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(bucketMessages)
@@ -642,7 +731,13 @@ func (d *DB) DeleteChatConversation(conversationID string) error {
 		for key, value := cursor.Seek(prefix); key != nil && strings.HasPrefix(string(key), string(prefix)); key, value = cursor.Next() {
 			var item server.StoredChatMessage
 			if json.Unmarshal(value, &item) == nil && item.Message.AttachmentPath != "" {
-				paths = append(paths, item.Message.AttachmentPath)
+				releasePath, releaseErr := releaseAttachmentReference(tx, item.Message)
+				if releaseErr != nil {
+					return releaseErr
+				}
+				if releasePath != "" {
+					paths = append(paths, releasePath)
+				}
 				if err := tx.Bucket(bucketAttachments).Delete([]byte(item.Message.ID)); err != nil {
 					return err
 				}
@@ -665,10 +760,15 @@ func (d *DB) DeleteChatConversation(conversationID string) error {
 }
 
 func (d *DB) ClearChatMessages() error {
+	d.attachmentMu.Lock()
+	defer d.attachmentMu.Unlock()
 	if err := d.recreateBucket(bucketMessages); err != nil {
 		return err
 	}
 	if err := d.recreateBucket(bucketAttachments); err != nil {
+		return err
+	}
+	if err := d.recreateBucket(bucketAttachmentHashes); err != nil {
 		return err
 	}
 	if !d.safeAttachmentRoot() {
@@ -1038,36 +1138,17 @@ func (d *DB) recreateBucket(name []byte) error {
 	})
 }
 
-func (d *DB) writeAttachmentStream(message server.ChatMessage, reader io.Reader, maxBytes int64) (string, int64, error) {
-	at := message.SentAt
-	if at.IsZero() {
-		at = time.Now().UTC()
-	}
-	dateDirectory := at.Local().Format("2006-01-02")
-	name := safeAttachmentName(message.FileName)
-	if name == "" {
-		extension := extensionForMIME(message.Mime)
-		name = message.ID + extension
-	} else {
-		name = message.ID + "_" + name
-	}
-	relative := filepath.Join(dateDirectory, name)
-	absolute, err := d.resolveAttachment(relative)
+func (d *DB) writeAttachmentStream(message server.ChatMessage, reader io.Reader, maxBytes int64) (string, int64, string, bool, error) {
+	temp, err := os.CreateTemp(d.attachmentRoot, ".lanchatgo-chat-*")
 	if err != nil {
-		return "", 0, err
-	}
-	if err = os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
-		return "", 0, err
-	}
-	temp, err := os.CreateTemp(filepath.Dir(absolute), ".hfs-chat-*")
-	if err != nil {
-		return "", 0, err
+		return "", 0, "", false, err
 	}
 	tempName := temp.Name()
 	defer os.Remove(tempName)
+	hasher := sha256.New()
 	var size int64
 	if err = temp.Chmod(0600); err == nil {
-		size, err = io.Copy(temp, io.LimitReader(reader, maxBytes+1))
+		size, err = io.Copy(io.MultiWriter(temp, hasher), io.LimitReader(reader, maxBytes+1))
 		if err == nil && size == 0 {
 			err = errors.New("chat attachment is empty")
 		} else if err == nil && size > maxBytes {
@@ -1078,12 +1159,50 @@ func (d *DB) writeAttachmentStream(message server.ChatMessage, reader io.Reader,
 		err = closeErr
 	}
 	if err != nil {
-		return "", 0, err
+		return "", 0, "", false, err
+	}
+	contentHash := hex.EncodeToString(hasher.Sum(nil))
+
+	var indexed attachmentHashRecord
+	_ = d.db.View(func(tx *bolt.Tx) error {
+		if raw := tx.Bucket(bucketAttachmentHashes).Get([]byte(contentHash)); raw != nil {
+			_ = json.Unmarshal(raw, &indexed)
+		}
+		return nil
+	})
+	if indexed.Path != "" {
+		if absolute, resolveErr := d.resolveAttachment(indexed.Path); resolveErr == nil {
+			if info, statErr := os.Stat(absolute); statErr == nil && !info.IsDir() && info.Size() == size {
+				return indexed.Path, size, contentHash, false, nil
+			}
+			if err = os.MkdirAll(filepath.Dir(absolute), 0700); err == nil {
+				err = os.Rename(tempName, absolute)
+			}
+			if err == nil {
+				return indexed.Path, size, contentHash, true, nil
+			}
+		}
+	}
+
+	at := message.SentAt
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	relative := filepath.Join(at.Local().Format("2006-01-02"), contentHash)
+	absolute, err := d.resolveAttachment(relative)
+	if err != nil {
+		return "", 0, "", false, err
+	}
+	if err = os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
+		return "", 0, "", false, err
+	}
+	if info, statErr := os.Stat(absolute); statErr == nil && !info.IsDir() && info.Size() == size {
+		return filepath.ToSlash(relative), size, contentHash, false, nil
 	}
 	if err = os.Rename(tempName, absolute); err != nil {
-		return "", 0, err
+		return "", 0, "", false, err
 	}
-	return filepath.ToSlash(relative), size, nil
+	return filepath.ToSlash(relative), size, contentHash, true, nil
 }
 
 func (d *DB) resolveAttachment(relative string) (string, error) {

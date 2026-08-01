@@ -28,6 +28,7 @@ type persistedSettings struct {
 	Port                   string `json:"port,omitempty"`
 	HTTPSPort              string `json:"httpsPort,omitempty"`
 	AccessHost             string `json:"accessHost,omitempty"`
+	TrustedProxies         string `json:"trustedProxies,omitempty"`
 }
 
 func defaultPersistedSettings() persistedSettings {

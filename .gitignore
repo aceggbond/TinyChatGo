@@ -21,4 +21,5 @@ chat_files/
 # Local tooling and screenshots
 .agents/
 .codex/
+.codex-tools/
 gui-preview.png

@@ -93,7 +93,10 @@ type ChatMessage struct {
 	FileURL  string `json:"fileUrl,omitempty"`
 	// AttachmentPath is persisted in the database and is never sent to a
 	// browser. It is relative to the application's chat_files directory.
-	AttachmentPath string    `json:"attachmentPath,omitempty"`
+	AttachmentPath string `json:"attachmentPath,omitempty"`
+	// AttachmentHash is the SHA-256 content address used to share one physical
+	// file between messages that contain identical attachment bytes.
+	AttachmentHash string    `json:"attachmentHash,omitempty"`
 	TargetID       string    `json:"targetId,omitempty"`
 	GroupID        string    `json:"groupId,omitempty"`
 	Private        bool      `json:"private,omitempty"`
@@ -1270,7 +1273,18 @@ func chatSessionID(r *http.Request) string {
 }
 
 func clientInfoFromRequest(r *http.Request) ChatClientInfo {
-	host, port := clientAddressFromRequest(r)
+	return clientInfoFromRequestWithTrustedProxies(r, nil)
+}
+
+func (s *Server) clientInfoFromRequest(r *http.Request) ChatClientInfo {
+	s.mu.RLock()
+	trusted := append([]*net.IPNet(nil), s.trustedProxyNets...)
+	s.mu.RUnlock()
+	return clientInfoFromRequestWithTrustedProxies(r, trusted)
+}
+
+func clientInfoFromRequestWithTrustedProxies(r *http.Request, trusted []*net.IPNet) ChatClientInfo {
+	host, port := clientAddressFromRequestWithTrustedProxies(r, trusted)
 	userAgent := cleanClientHeader(r.UserAgent(), 512)
 	clientHints := cleanClientHeader(r.Header.Get("Sec-CH-UA"), 256)
 	platform := strings.Trim(cleanClientHeader(r.Header.Get("Sec-CH-UA-Platform"), 64), `"`)
@@ -1315,10 +1329,14 @@ func clientTypeFromRequest(r *http.Request) string {
 }
 
 // clientAddressFromRequest returns a canonical IP address and the remote TCP
-// source port. X-Forwarded-For is accepted only from a loopback peer so a
-// local reverse proxy can preserve visitor identity without letting a remote
-// client choose another visitor's IP.
+// source port. Forwarding headers are accepted only from loopback or an
+// explicitly configured trusted proxy, so external clients cannot forge
+// another visitor's address.
 func clientAddressFromRequest(r *http.Request) (string, string) {
+	return clientAddressFromRequestWithTrustedProxies(r, nil)
+}
+
+func clientAddressFromRequestWithTrustedProxies(r *http.Request, trusted []*net.IPNet) (string, string) {
 	if r == nil {
 		return "", ""
 	}
@@ -1330,8 +1348,20 @@ func clientAddressFromRequest(r *http.Request) (string, string) {
 	}
 	ip := normalizeChatIP(host)
 	parsed := net.ParseIP(ip)
-	if parsed != nil && parsed.IsLoopback() {
+	trustedPeer := parsed != nil && parsed.IsLoopback()
+	if !trustedPeer && parsed != nil {
+		for _, network := range trusted {
+			if network != nil && network.Contains(parsed) {
+				trustedPeer = true
+				break
+			}
+		}
+	}
+	if trustedPeer {
 		forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
+		if forwarded == "" {
+			forwarded = strings.TrimSpace(r.Header.Get("X-Real-IP"))
+		}
 		if forwardedIP := normalizeChatIP(forwarded); forwardedIP != "" {
 			ip = forwardedIP
 		}
@@ -1558,7 +1588,7 @@ func (s *Server) handleChatWebSocket(w http.ResponseWriter, r *http.Request, acc
 	} else if current, ok := accountFromContext(r.Context()); ok {
 		account = current
 	}
-	client := clientInfoFromRequest(r)
+	client := s.clientInfoFromRequest(r)
 	if account.ID == "" {
 		// Compatibility path for direct in-package tests and embedders. HTTP
 		// requests through ServeHTTP always supply an authenticated account.
@@ -2655,7 +2685,7 @@ func (h *chatHub) recallPeerMessage(peer *chatPeer, messageID string) error {
 	} else {
 		message.Recalled = true
 		message.RecalledAt = now
-		message.Text, message.Mime, message.FileName, message.FileURL, message.AttachmentPath = "", "", "", "", ""
+		message.Text, message.Mime, message.FileName, message.FileURL, message.AttachmentPath, message.AttachmentHash = "", "", "", "", "", ""
 		message.Data = nil
 		message.FileSize = 0
 	}

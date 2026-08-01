@@ -1,6 +1,7 @@
 package database
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -160,6 +161,60 @@ func TestDatabasePersistsApplicationAndChatData(t *testing.T) {
 	}
 	if entries, readDirErr := os.ReadDir(filepath.Join(root, "chat_files")); readDirErr != nil || len(entries) != 0 {
 		t.Fatalf("chat_files after clear = %#v, %v", entries, readDirErr)
+	}
+}
+
+func TestChatAttachmentsDeduplicateBySHA256AndKeepSharedFileUntilLastReference(t *testing.T) {
+	root := t.TempDir()
+	store, err := Open(filepath.Join(root, "lanchatgo.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	content := "identical attachment bytes"
+	first, err := store.SaveChatAttachment("direct:a|b", server.ChatMessage{
+		ID: "dedup-first", Kind: server.ChatMessageKindFile, Sender: "user",
+		ClientID: "a", FileName: "first.txt", SentAt: time.Now().UTC(),
+	}, strings.NewReader(content), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.SaveChatAttachment("direct:a|b", server.ChatMessage{
+		ID: "dedup-second", Kind: server.ChatMessageKindFile, Sender: "user",
+		ClientID: "b", FileName: "renamed.txt", SentAt: time.Now().UTC().Add(48 * time.Hour),
+	}, strings.NewReader(content), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AttachmentHash == "" || first.AttachmentHash != second.AttachmentHash ||
+		first.AttachmentPath != second.AttachmentPath {
+		t.Fatalf("attachments were not deduplicated: first=%#v second=%#v", first, second)
+	}
+	absolute, err := store.resolveAttachment(first.AttachmentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.DeleteChatMessage(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(absolute); err != nil {
+		t.Fatalf("shared attachment was removed too early: %v", err)
+	}
+	attachment, err := store.OpenChatAttachment(second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, readErr := io.ReadAll(attachment.Reader)
+	_ = attachment.Reader.Close()
+	if readErr != nil || string(got) != content {
+		t.Fatalf("deduplicated attachment content = %q, %v", got, readErr)
+	}
+	if err = store.DeleteChatMessage(second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(absolute); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unreferenced attachment still exists: %v", err)
 	}
 }
 

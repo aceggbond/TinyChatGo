@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"lanchatgo/internal/appinfo"
 	"lanchatgo/internal/discovery"
@@ -74,6 +75,7 @@ type Server struct {
 	visitorMu           sync.Mutex
 	visitorSeen         map[string]time.Time
 	visitorNotify       func(ChatClientInfo)
+	trustedProxyNets    []*net.IPNet
 }
 
 func New(logWriter io.Writer) *Server {
@@ -137,6 +139,69 @@ func (s *Server) SetAccess(password string, upload, download, manage bool) {
 	if passwordChanged {
 		s.chat.disconnect(websocketClosePolicyViolation, "access credentials changed")
 	}
+}
+
+// SetTrustedProxies configures the proxy peers that are allowed to supply the
+// original visitor address through X-Forwarded-For/X-Real-IP. Loopback peers
+// are always trusted for local reverse proxies.
+func (s *Server) SetTrustedProxies(raw string) error {
+	nets, _, err := parseTrustedProxies(raw)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.trustedProxyNets = nets
+	s.mu.Unlock()
+	return nil
+}
+
+// NormalizeTrustedProxies validates and canonicalizes a comma/space separated
+// list of individual proxy IPs or CIDR networks for settings persistence.
+func NormalizeTrustedProxies(raw string) (string, error) {
+	_, normalized, err := parseTrustedProxies(raw)
+	return normalized, err
+}
+
+func parseTrustedProxies(raw string) ([]*net.IPNet, string, error) {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || unicode.IsSpace(r)
+	})
+	nets := make([]*net.IPNet, 0, len(parts))
+	labels := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		var network *net.IPNet
+		if strings.Contains(part, "/") {
+			ip, parsed, err := net.ParseCIDR(part)
+			if err != nil {
+				return nil, "", fmt.Errorf("可信代理地址无效：%s", part)
+			}
+			parsed.IP = ip.Mask(parsed.Mask)
+			network = parsed
+		} else {
+			ip := net.ParseIP(strings.Trim(part, "[]"))
+			if ip == nil {
+				return nil, "", fmt.Errorf("可信代理 IP 无效：%s", part)
+			}
+			bits := 128
+			if ip4 := ip.To4(); ip4 != nil {
+				ip, bits = ip4, 32
+			}
+			network = &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}
+		}
+		label := network.String()
+		if _, exists := seen[label]; exists {
+			continue
+		}
+		seen[label] = struct{}{}
+		nets = append(nets, network)
+		labels = append(labels, label)
+	}
+	return nets, strings.Join(labels, ", "), nil
 }
 
 // SetClientDownloadEnabled controls whether the browser portal exposes and
@@ -452,6 +517,10 @@ func (s *Server) startWithHTTPSCertificateLocked(httpAddr, httpsAddr string, cer
 	if err != nil {
 		return ListenAddresses{}, fmt.Errorf("listen HTTP on %q: %w", httpAddr, err)
 	}
+	s.mu.RLock()
+	trustedProxies := append([]*net.IPNet(nil), s.trustedProxyNets...)
+	s.mu.RUnlock()
+	httpLn = newProxyProtocolListener(httpLn, trustedProxies)
 
 	var httpsLn net.Listener
 	if httpsAddr != "" {
@@ -460,6 +529,7 @@ func (s *Server) startWithHTTPSCertificateLocked(httpAddr, httpsAddr string, cer
 			_ = httpLn.Close()
 			return ListenAddresses{}, fmt.Errorf("listen HTTPS on %q: %w", httpsAddr, listenErr)
 		}
+		rawHTTPSLn = newProxyProtocolListener(rawHTTPSLn, trustedProxies)
 		httpsLn = tls.NewListener(rawHTTPSLn, &tls.Config{
 			Certificates: []tls.Certificate{certificate},
 			MinVersion:   tls.VersionTLS12,
@@ -1417,7 +1487,7 @@ func (s *Server) trackPageVisitor(w http.ResponseWriter, r *http.Request) {
 	if !authenticated {
 		return
 	}
-	info := clientInfoFromRequest(r)
+	info := s.clientInfoFromRequest(r)
 	info.AccountID = account.ID
 	info.Username = account.Username
 	visitorID := account.ID

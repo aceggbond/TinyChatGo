@@ -9,6 +9,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -648,6 +649,26 @@ func TestClientAddressCanonicalizesIPAndTrustsOnlyLoopbackProxy(t *testing.T) {
 	ip, port = clientAddressFromRequest(request)
 	if ip != "::1" || port != "4567" {
 		t.Fatalf("invalid forwarded address was trusted = %q:%q", ip, port)
+	}
+}
+
+func TestClientAddressAcceptsForwardedIPOnlyFromConfiguredProxy(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+	request.RemoteAddr = "10.20.30.40:3210"
+	request.Header.Set("X-Forwarded-For", "198.51.100.77, 10.20.30.40")
+	_, network, err := net.ParseCIDR("10.20.30.40/32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip, port := clientAddressFromRequestWithTrustedProxies(request, []*net.IPNet{network})
+	if ip != "198.51.100.77" || port != "3210" {
+		t.Fatalf("configured proxy address = %q:%q", ip, port)
+	}
+
+	request.RemoteAddr = "10.20.30.41:3211"
+	ip, port = clientAddressFromRequestWithTrustedProxies(request, []*net.IPNet{network})
+	if ip != "10.20.30.41" || port != "3211" {
+		t.Fatalf("unconfigured proxy address = %q:%q", ip, port)
 	}
 }
 

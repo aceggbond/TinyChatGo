@@ -213,6 +213,53 @@ func (s *Server) SetAccountStatus(id string, status AccountStatus) error {
 	return nil
 }
 
+// SetAccountPassword replaces one registered account's password and revokes
+// every existing login session for that account. Revoking sessions is
+// intentional: an administrator password reset must also remove access from
+// devices that still hold an old authentication cookie.
+func (s *Server) SetAccountPassword(id, password string) error {
+	id = normalizeAccountID(id)
+	if id == "" {
+		return errors.New("账号 ID 无效")
+	}
+	if err := validatePassword(password); err != nil {
+		return err
+	}
+	passwordHash, err := hashAccountPassword(password)
+	if err != nil {
+		return fmt.Errorf("生成密码摘要失败：%w", err)
+	}
+
+	s.auth.mu.Lock()
+	account := s.auth.accounts[id]
+	if account == nil {
+		s.auth.mu.Unlock()
+		return errors.New("账号不存在")
+	}
+	next := *account
+	next.PasswordHash = passwordHash
+	next.UpdatedAt = time.Now().UTC()
+	store := s.auth.persistence
+	if store != nil {
+		if err = store.SaveAccount(next); err != nil {
+			s.auth.mu.Unlock()
+			return err
+		}
+	}
+	*account = next
+	for token, session := range s.auth.sessions {
+		if session.AccountID == id {
+			delete(s.auth.sessions, token)
+		}
+	}
+	s.auth.mu.Unlock()
+	if store != nil {
+		_ = store.DeleteAccountSessions(id)
+	}
+	s.chat.disconnectIdentity(id, "account password changed")
+	return nil
+}
+
 func (s *Server) DeleteAccount(id string) error {
 	id = normalizeAccountID(id)
 	if id == "" {

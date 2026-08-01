@@ -44,6 +44,39 @@ static NSStatusItem *lcgStatusItem;
   }
   completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
 }
+- (void)showNavigationError:(WKWebView *)webView error:(NSError *)error {
+  NSString *message = error.localizedDescription ?: @"无法连接内置服务端";
+  NSString *escaped = [message stringByReplacingOccurrencesOfString:@"&" withString:@"&amp;"];
+  escaped = [escaped stringByReplacingOccurrencesOfString:@"<" withString:@"&lt;"];
+  escaped = [escaped stringByReplacingOccurrencesOfString:@">" withString:@"&gt;"];
+  NSString *page = [NSString stringWithFormat:
+      @"<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width'>"
+       @"<style>body{margin:0;display:grid;min-height:100vh;place-items:center;background:#f3f5f8;font-family:-apple-system,PingFang SC;color:#243047}.card{max-width:560px;margin:24px;padding:28px;border:1px solid #dfe5ee;border-radius:16px;background:white;box-shadow:0 16px 45px #1b31521a}h2{margin:0 0 10px}p{color:#718096;line-height:1.7}button{padding:10px 18px;border:0;border-radius:9px;background:#2f6fed;color:white;font-weight:700}</style>"
+       @"<div class='card'><h2>服务端连接失败</h2><p>%@</p><button onclick='location.reload()'>重新连接</button></div>",
+      escaped];
+  [webView loadHTMLString:page baseURL:nil];
+}
+- (void)webView:(WKWebView *)webView
+    didFailProvisionalNavigation:(WKNavigation *)navigation
+                       withError:(NSError *)error {
+  (void)navigation;
+  // Navigating from the embedded launcher to the configured server normally
+  // cancels the launcher's provisional navigation. Treating that cancellation
+  // as a connection failure can replace the real page with the error page.
+  if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled) {
+    return;
+  }
+  [self showNavigationError:webView error:error];
+}
+- (void)webView:(WKWebView *)webView
+    didFailNavigation:(WKNavigation *)navigation
+             withError:(NSError *)error {
+  (void)navigation;
+  if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled) {
+    return;
+  }
+  [self showNavigationError:webView error:error];
+}
 - (void)userNotificationCenter:(UNUserNotificationCenter *)center
        willPresentNotification:(UNNotification *)notification
          withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {

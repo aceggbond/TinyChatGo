@@ -69,7 +69,6 @@ type desktopClientController struct {
 	trayFlashOn       bool
 	trayFlashStop     chan struct{}
 	trayAlertIcon     uintptr
-	trayNotifyUntil   time.Time
 	exiting           bool
 	lastUnread        int
 	notificationRoute string
@@ -210,7 +209,7 @@ func RunClient(logo []byte) error {
 		return err
 	}
 	if hasArgument("--autostart") {
-		showWindow.Call(window, 0)
+		controller.hide()
 	}
 	go func() {
 		time.Sleep(80 * time.Millisecond)
@@ -654,18 +653,20 @@ func (c *desktopClientController) notify(title, body, route, avatar string, ment
 	if !enabled {
 		return nil
 	}
+	if c.isForegroundWindow() {
+		return nil
+	}
 	if sound {
 		messageBeep.Call(0x40)
 	}
 	c.flashTaskbar()
+	c.startTrayFlash()
 	showBalloon := private || mentioned || !c.trayIconVisible()
 	if showBalloon {
 		c.mu.Lock()
 		c.notificationRoute = route
 		c.mu.Unlock()
 		c.showTrayNotification(title, body, avatar)
-	} else {
-		c.startTrayFlash()
 	}
 	return nil
 }
@@ -706,7 +707,7 @@ func (c *desktopClientController) updateUnread(total int, _ string) {
 	if increased && total > 0 {
 		c.flashTaskbar()
 	}
-	if total > 0 && c.trayIconVisible() {
+	if total > 0 {
 		c.startTrayFlash()
 	} else {
 		c.stopTrayFlash()
@@ -776,8 +777,8 @@ func (c *desktopClientController) stopTrayFlash() {
 func (c *desktopClientController) setTrayFlashIcon(flashOn bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	added, exiting, alertIcon, notifyUntil := c.trayAdded, c.exiting, c.trayAlertIcon, c.trayNotifyUntil
-	if !added || exiting || c.hwnd == 0 || time.Now().Before(notifyUntil) {
+	added, exiting, alertIcon := c.trayAdded, c.exiting, c.trayAlertIcon
+	if !added || exiting || c.hwnd == 0 {
 		return
 	}
 	data := c.trayData()
@@ -847,7 +848,6 @@ func (c *desktopClientController) showTrayNotification(title, body, avatar strin
 	c.ensureTray()
 	c.mu.Lock()
 	added := c.trayAdded
-	c.trayNotifyUntil = time.Now().Add(3 * time.Second)
 	c.mu.Unlock()
 	if !added {
 		return

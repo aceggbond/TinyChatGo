@@ -199,6 +199,7 @@ func Run(logo, donation []byte) error {
 	settings.AllowChat = true
 	settings.GroupChat = false
 	srv.SetAccess(settings.Password, false, false, false)
+	_ = srv.SetTrustedProxies(settings.TrustedProxies)
 	srv.SetHTTPSRedirect(settings.RedirectToHTTPS, settings.AccessHost, settings.HTTPSPort)
 	srv.SetChatEnabled(true)
 	srv.SetGroupChatEnabled(settings.GroupChat)
@@ -323,6 +324,7 @@ func Run(logo, donation []byte) error {
 		"hfsSetUserName":         controller.setUserName,
 		"hfsSetUserBlacklisted":  controller.setUserBlacklisted,
 		"hfsSetAccountStatus":    controller.setAccountStatus,
+		"hfsSetAccountPassword":  controller.setAccountPassword,
 		"hfsRenameGroup":         controller.renameGroup,
 		"hfsRemoveGroupMember":   controller.removeGroupMember,
 		"hfsDeleteGroup":         controller.deleteGroup,
@@ -847,6 +849,14 @@ func (m *modernController) setAccountStatus(id, status string) (modernState, err
 	return m.getState(), nil
 }
 
+func (m *modernController) setAccountPassword(id, password string) (modernState, error) {
+	if err := m.srv.SetAccountPassword(id, password); err != nil {
+		return m.getState(), err
+	}
+	modernRefresh()
+	return m.getState(), nil
+}
+
 func (m *modernController) persistentLogs() string {
 	if m.db == nil {
 		return m.log.String()
@@ -921,6 +931,7 @@ func (m *modernController) saveSettings(settings persistedSettings) (modernState
 	m.mu.Unlock()
 
 	m.srv.SetAccess(settings.Password, false, false, false)
+	_ = m.srv.SetTrustedProxies(settings.TrustedProxies)
 	m.srv.SetHTTPSRedirect(settings.RedirectToHTTPS, settings.AccessHost, settings.HTTPSPort)
 	m.srv.SetChatEnabled(true)
 	m.srv.SetGroupChatEnabled(settings.GroupChat)
@@ -948,6 +959,11 @@ func validateModernSettings(settings persistedSettings, addresses []modernAddres
 	settings.AllowUpload = false
 	settings.AllowDownload = false
 	settings.GroupChat = false
+	normalizedProxies, err := server.NormalizeTrustedProxies(settings.TrustedProxies)
+	if err != nil {
+		return settings, err
+	}
+	settings.TrustedProxies = normalizedProxies
 	if !settings.ShowUserList {
 		settings.AllowPrivateChat = false
 	}
@@ -1002,6 +1018,7 @@ func (m *modernController) toggleServer(host, portText, httpsPortText string) (m
 		settings, err = validateModernSettings(settings, m.addresses)
 		if err == nil {
 			m.srv.SetAccess(settings.Password, settings.AllowUpload, settings.AllowDownload, false)
+			_ = m.srv.SetTrustedProxies(settings.TrustedProxies)
 			m.srv.SetHTTPSRedirect(settings.RedirectToHTTPS, settings.AccessHost, settings.HTTPSPort)
 			m.srv.SetChatEnabled(true)
 			m.srv.SetGroupChatEnabled(settings.GroupChat)
