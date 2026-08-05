@@ -546,7 +546,7 @@ func (s *Server) adminState() map[string]any {
 	return map[string]any{
 		"ok": true, "running": addresses.HTTP != "", "httpAddress": addresses.HTTP, "httpsAddress": addresses.HTTPS,
 		"onlineCount": s.ChatOnlineCount(), "users": users, "groups": s.ChatGroups(),
-		"settings": map[string]any{"requireApproval": s.AccountApprovalRequired(), "allowGroups": s.UserGroupCreationEnabled(), "showUsers": s.UserListEnabled(), "privateChat": s.PrivateMessagesEnabled()},
+		"settings": map[string]any{"requireApproval": s.AccountApprovalRequired(), "allowGroups": s.UserGroupCreationEnabled(), "showUsers": s.UserListEnabled(), "privateChat": s.PrivateMessagesEnabled(), "clientDownload": s.ClientDownloadEnabled()},
 	}
 }
 

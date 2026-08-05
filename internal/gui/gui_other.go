@@ -41,6 +41,7 @@ func Run(logo, _ []byte) error {
 	showUsers := flags.Bool("show-users", envBool("TINYCHATGO_SHOW_USERS", true), "show the user list")
 	privateChat := flags.Bool("private-chat", envBool("TINYCHATGO_PRIVATE_CHAT", true), "allow private messages")
 	allowGroups := flags.Bool("allow-groups", envBool("TINYCHATGO_ALLOW_GROUPS", true), "allow users to create groups")
+	clientDownload := flags.Bool("client-download", envBool("TINYCHATGO_CLIENT_DOWNLOAD", true), "show desktop client download in the web portal")
 	redirectHTTPS := flags.Bool("redirect-https", envBool("TINYCHATGO_REDIRECT_HTTPS", false), "redirect HTTP requests to HTTPS")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -97,6 +98,9 @@ func Run(logo, _ []byte) error {
 		if os.Getenv("TINYCHATGO_PRIVATE_CHAT") == "" {
 			*privateChat = storedSettings.AllowPrivateChat
 		}
+		if os.Getenv("TINYCHATGO_CLIENT_DOWNLOAD") == "" {
+			*clientDownload = storedSettings.AllowClientDownload
+		}
 	}
 
 	srv := server.New(os.Stdout)
@@ -108,6 +112,7 @@ func Run(logo, _ []byte) error {
 		storedSettings.AllowGroupChat = settings.AllowGroups
 		storedSettings.ShowUserList = settings.ShowUsers
 		storedSettings.AllowPrivateChat = settings.PrivateChat && settings.ShowUsers
+		storedSettings.AllowClientDownload = *clientDownload
 		return store.SaveSettings(storedSettings)
 	})
 	if err = srv.SetTrustedProxies(*trustedProxies); err != nil {
@@ -118,6 +123,7 @@ func Run(logo, _ []byte) error {
 	srv.SetUserListEnabled(*showUsers)
 	srv.SetPrivateMessagesEnabled(*privateChat && *showUsers)
 	srv.SetAccountApprovalRequired(*requireApproval)
+	srv.SetClientDownloadEnabled(*clientDownload)
 	if err = srv.SetFallbackUploadDir(uploadDir); err != nil {
 		return err
 	}
