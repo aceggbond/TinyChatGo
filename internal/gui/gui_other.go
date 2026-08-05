@@ -79,11 +79,37 @@ func Run(logo, _ []byte) error {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer store.Close()
+	storedSettings := defaultPersistedSettings()
+	settingsFound, settingsErr := store.LoadSettings(&storedSettings)
+	if settingsErr != nil {
+		return fmt.Errorf("load settings: %w", settingsErr)
+	}
+	if settingsFound {
+		if os.Getenv("TINYCHATGO_REQUIRE_APPROVAL") == "" {
+			*requireApproval = storedSettings.RequireAccountApproval
+		}
+		if os.Getenv("TINYCHATGO_ALLOW_GROUPS") == "" {
+			*allowGroups = storedSettings.AllowGroupChat
+		}
+		if os.Getenv("TINYCHATGO_SHOW_USERS") == "" {
+			*showUsers = storedSettings.ShowUserList
+		}
+		if os.Getenv("TINYCHATGO_PRIVATE_CHAT") == "" {
+			*privateChat = storedSettings.AllowPrivateChat
+		}
+	}
 
 	srv := server.New(os.Stdout)
 	srv.SetBrandLogo(logo)
 	srv.SetAccess(*password, false, false, false)
 	srv.SetAdminPassword(*adminPassword)
+	srv.SetAdminSettingsSaver(func(settings server.AdminSettings) error {
+		storedSettings.RequireAccountApproval = settings.RequireApproval
+		storedSettings.AllowGroupChat = settings.AllowGroups
+		storedSettings.ShowUserList = settings.ShowUsers
+		storedSettings.AllowPrivateChat = settings.PrivateChat && settings.ShowUsers
+		return store.SaveSettings(storedSettings)
+	})
 	if err = srv.SetTrustedProxies(*trustedProxies); err != nil {
 		return err
 	}

@@ -25,7 +25,7 @@ func TestSeparateAdminLoginAndStatus(t *testing.T) {
 	}
 	page := httptest.NewRecorder()
 	s.AdminHandler().ServeHTTP(page, httptest.NewRequest(http.MethodGet, "http://example.test/admin/", nil))
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "TinyChatGo 管理后台") {
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "TCGS 管理后台") || !strings.Contains(page.Body.String(), "群聊管理") || !strings.Contains(page.Body.String(), "归档管理") {
 		t.Fatalf("admin page = %d, %q", page.Code, page.Body.String())
 	}
 
@@ -43,5 +43,14 @@ func TestSeparateAdminLoginAndStatus(t *testing.T) {
 	s.AdminHandler().ServeHTTP(status, statusRequest)
 	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"accounts":0`) {
 		t.Fatalf("status = %d, %q", status.Code, status.Body.String())
+	}
+
+	settingsRequest := httptest.NewRequest(http.MethodPost, "http://example.test/__admin/settings", strings.NewReader(`{"requireApproval":true,"allowGroups":true,"showUsers":true,"privateChat":true}`))
+	settingsRequest.Header.Set("Origin", "http://example.test")
+	settingsRequest.AddCookie(login.Result().Cookies()[0])
+	settings := httptest.NewRecorder()
+	s.AdminHandler().ServeHTTP(settings, settingsRequest)
+	if settings.Code != http.StatusOK || !s.AccountApprovalRequired() || !s.UserGroupCreationEnabled() || !s.UserListEnabled() || !s.PrivateMessagesEnabled() {
+		t.Fatalf("settings = %d, %q", settings.Code, settings.Body.String())
 	}
 }

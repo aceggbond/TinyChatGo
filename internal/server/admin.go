@@ -6,8 +6,12 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,10 +20,18 @@ import (
 const adminCookieName = "tinychatgo_admin"
 
 type adminManager struct {
-	mu       sync.Mutex
-	password [32]byte
-	enabled  bool
-	sessions map[[32]byte]time.Time
+	mu           sync.Mutex
+	password     [32]byte
+	enabled      bool
+	sessions     map[[32]byte]time.Time
+	saveSettings func(AdminSettings) error
+}
+
+type AdminSettings struct {
+	RequireApproval bool `json:"requireApproval"`
+	AllowGroups     bool `json:"allowGroups"`
+	ShowUsers       bool `json:"showUsers"`
+	PrivateChat     bool `json:"privateChat"`
 }
 
 func newAdminManager() *adminManager { return &adminManager{sessions: make(map[[32]byte]time.Time)} }
@@ -32,6 +44,12 @@ func (s *Server) SetAdminPassword(password string) {
 	s.admin.password = digest
 	s.admin.enabled = password != ""
 	s.admin.sessions = make(map[[32]byte]time.Time)
+	s.admin.mu.Unlock()
+}
+
+func (s *Server) SetAdminSettingsSaver(save func(AdminSettings) error) {
+	s.admin.mu.Lock()
+	s.admin.saveSettings = save
 	s.admin.mu.Unlock()
 }
 
@@ -141,7 +159,7 @@ func (s *Server) serveAdmin(w http.ResponseWriter, r *http.Request, clientIP str
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")
 		if r.Method == http.MethodGet {
-			_, _ = w.Write([]byte(adminPageHTML))
+			_, _ = w.Write([]byte(adminFullPageHTML))
 		}
 		return
 	}
@@ -205,6 +223,230 @@ func (s *Server) serveAdmin(w http.ResponseWriter, r *http.Request, clientIP str
 			rows = append(rows, row{AccountSummary: account, Online: s.ChatIdentityOnline(account.ID)})
 		}
 		adminJSON(w, http.StatusOK, map[string]any{"ok": true, "accounts": rows})
+	case "/__admin/state":
+		if r.Method != http.MethodGet {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		adminJSON(w, http.StatusOK, s.adminState())
+	case "/__admin/settings":
+		var input AdminSettings
+		if r.Method != http.MethodPost {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		if !decodeAdminJSON(w, r, &input) {
+			return
+		}
+		s.SetAccountApprovalRequired(input.RequireApproval)
+		s.SetUserGroupCreationEnabled(input.AllowGroups)
+		s.SetUserListEnabled(input.ShowUsers)
+		s.SetPrivateMessagesEnabled(input.PrivateChat && input.ShowUsers)
+		s.admin.mu.Lock()
+		save := s.admin.saveSettings
+		s.admin.mu.Unlock()
+		if save != nil {
+			if err := save(input); err != nil {
+				adminJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "message": "保存设置失败：" + err.Error()})
+				return
+			}
+		}
+		adminJSON(w, http.StatusOK, s.adminState())
+	case "/__admin/user/name":
+		var input struct{ ID, Name string }
+		if r.Method != http.MethodPost {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		if !decodeAdminJSON(w, r, &input) {
+			return
+		}
+		if err := s.SetChatUserName(input.ID, input.Name); err != nil {
+			adminJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		adminJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case "/__admin/user/blacklist":
+		var input struct {
+			ID          string
+			Blacklisted bool
+		}
+		if r.Method != http.MethodPost {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		if !decodeAdminJSON(w, r, &input) {
+			return
+		}
+		if err := s.SetChatUserBlacklisted(input.ID, input.Blacklisted); err != nil {
+			adminJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		adminJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case "/__admin/user/delete":
+		var input struct{ ID string }
+		if r.Method != http.MethodPost {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		if !decodeAdminJSON(w, r, &input) {
+			return
+		}
+		for _, account := range s.Accounts() {
+			if account.ID == input.ID {
+				if err := s.DeleteAccount(input.ID); err != nil {
+					adminJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "message": err.Error()})
+					return
+				}
+				break
+			}
+		}
+		_ = s.RemoveChatVisitor(input.ID)
+		adminJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case "/__admin/group/rename":
+		var input struct{ ID, Name string }
+		if r.Method != http.MethodPost {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		if !decodeAdminJSON(w, r, &input) {
+			return
+		}
+		if err := s.RenameChatGroup(input.ID, input.Name); err != nil {
+			adminJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		adminJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case "/__admin/group/member/remove":
+		var input struct{ ID, Member string }
+		if r.Method != http.MethodPost {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		if !decodeAdminJSON(w, r, &input) {
+			return
+		}
+		if err := s.RemoveChatGroupMember(input.ID, input.Member); err != nil {
+			adminJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		adminJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case "/__admin/group/delete":
+		var input struct{ ID string }
+		if r.Method != http.MethodPost {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		if !decodeAdminJSON(w, r, &input) {
+			return
+		}
+		if err := s.DeleteChatGroup(input.ID); err != nil {
+			adminJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		adminJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case "/__admin/archives":
+		if r.Method != http.MethodGet {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		persistence := s.Persistence()
+		if persistence == nil {
+			adminJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "message": "归档数据库未启用"})
+			return
+		}
+		page, err := persistence.ListChatAttachments(adminArchiveQuery(r.URL.Query()))
+		if err != nil {
+			adminJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		adminJSON(w, http.StatusOK, page)
+	case "/__admin/archive/file":
+		if r.Method != http.MethodGet {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		persistence := s.Persistence()
+		if persistence == nil {
+			http.NotFound(w, r)
+			return
+		}
+		attachment, err := persistence.OpenChatAttachment(strings.TrimSpace(r.URL.Query().Get("id")))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer attachment.Reader.Close()
+		contentType := attachment.MIME
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Length", strconv.FormatInt(attachment.Size, 10))
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": attachment.Name}))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = io.Copy(w, attachment.Reader)
+	case "/__admin/archive/delete":
+		var input struct{ ID string }
+		if r.Method != http.MethodPost {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		if !decodeAdminJSON(w, r, &input) {
+			return
+		}
+		if err := s.DeleteChatMessage(input.ID); err != nil {
+			adminJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		adminJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case "/__admin/data/clear-history":
+		if r.Method != http.MethodPost {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		if err := s.ClearChatHistory(); err != nil {
+			adminJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		adminJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case "/__admin/data/clear-users":
+		if r.Method != http.MethodPost {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		if err := s.ClearChatUsers(); err != nil {
+			adminJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		adminJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case "/__admin/logs":
+		if r.Method != http.MethodGet {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		if persistence := s.Persistence(); persistence != nil {
+			records, err := persistence.ListAccessRecords(500)
+			if err != nil {
+				adminJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "message": err.Error()})
+				return
+			}
+			adminJSON(w, http.StatusOK, map[string]any{"ok": true, "records": records})
+			return
+		}
+		adminJSON(w, http.StatusOK, map[string]any{"ok": true, "records": []AccessRecord{}})
+	case "/__admin/logs/clear":
+		if r.Method != http.MethodPost {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		if persistence := s.Persistence(); persistence != nil {
+			if err := persistence.ClearAccessRecords(); err != nil {
+				adminJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "message": err.Error()})
+				return
+			}
+		}
+		adminJSON(w, http.StatusOK, map[string]any{"ok": true})
 	case "/__admin/account/status":
 		var input struct {
 			ID     string        `json:"id"`
@@ -262,6 +504,65 @@ func (s *Server) serveAdmin(w http.ResponseWriter, r *http.Request, clientIP str
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+type adminUserRow struct {
+	ID          string         `json:"id"`
+	Username    string         `json:"username,omitempty"`
+	Name        string         `json:"name,omitempty"`
+	Status      AccountStatus  `json:"status,omitempty"`
+	Online      bool           `json:"online"`
+	Blacklisted bool           `json:"blacklisted"`
+	FirstSeen   time.Time      `json:"firstSeen,omitempty"`
+	LastSeen    time.Time      `json:"lastSeen,omitempty"`
+	LastIP      string         `json:"lastIp,omitempty"`
+	Client      ChatClientInfo `json:"client"`
+}
+
+func (s *Server) adminState() map[string]any {
+	profiles := make(map[string]ChatUser)
+	for _, profile := range s.ChatUsers() {
+		profiles[profile.IP] = profile
+	}
+	accounts := s.Accounts()
+	users := make([]adminUserRow, 0, len(accounts)+len(profiles))
+	seen := make(map[string]bool)
+	for _, account := range accounts {
+		profile, found := profiles[account.ID]
+		row := adminUserRow{ID: account.ID, Username: account.Username, Status: account.Status, Online: s.ChatIdentityOnline(account.ID), FirstSeen: account.CreatedAt, LastSeen: account.LastLoginAt, LastIP: account.LastIP, Client: ChatClientInfo{IP: account.LastIP}}
+		if found {
+			row.Name, row.Blacklisted, row.FirstSeen, row.LastSeen, row.Client = profile.Name, profile.Blacklisted, profile.FirstSeen, profile.LastSeen, profile.Client
+		}
+		users = append(users, row)
+		seen[account.ID] = true
+	}
+	for id, profile := range profiles {
+		if seen[id] {
+			continue
+		}
+		users = append(users, adminUserRow{ID: id, Name: profile.Name, Online: s.ChatIdentityOnline(id), Blacklisted: profile.Blacklisted, FirstSeen: profile.FirstSeen, LastSeen: profile.LastSeen, LastIP: profile.Client.IP, Client: profile.Client})
+	}
+	addresses := s.listenAddresses()
+	return map[string]any{
+		"ok": true, "running": addresses.HTTP != "", "httpAddress": addresses.HTTP, "httpsAddress": addresses.HTTPS,
+		"onlineCount": s.ChatOnlineCount(), "users": users, "groups": s.ChatGroups(),
+		"settings": map[string]any{"requireApproval": s.AccountApprovalRequired(), "allowGroups": s.UserGroupCreationEnabled(), "showUsers": s.UserListEnabled(), "privateChat": s.PrivateMessagesEnabled()},
+	}
+}
+
+func adminArchiveQuery(values url.Values) ChatArchiveQuery {
+	parseDate := func(raw string, end bool) time.Time {
+		value, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(raw), time.Local)
+		if err != nil {
+			return time.Time{}
+		}
+		if end {
+			value = value.Add(24*time.Hour - time.Nanosecond)
+		}
+		return value.UTC()
+	}
+	page, _ := strconv.Atoi(values.Get("page"))
+	return ChatArchiveQuery{Kind: strings.TrimSpace(values.Get("kind")), Query: strings.TrimSpace(values.Get("query")), From: parseDate(values.Get("from"), false), To: parseDate(values.Get("to"), true), Page: page, PageSize: 36}
 }
 
 const adminPageHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TinyChatGo 管理后台</title><style>
