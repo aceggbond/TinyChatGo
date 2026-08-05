@@ -8,19 +8,17 @@ services:
     restart: unless-stopped
     ports:
       # Public HTTP
-      - "8080:8080"
+      - "18080:8080"
       # Public HTTPS (requires certificate configuration below)
-      - "8443:8443"
+      - "18443:8443"
       # Dedicated administrator web interface
-      - "8081:8081"
+      - "8881:8881"
     volumes:
       - ./tinychatgo-data:/data
     environment:
       TINYCHATGO_ACCESS_PASSWORD: "change-user-password"
       TINYCHATGO_ADMIN_PASSWORD: "change-admin-password"
-      TINYCHATGO_ADMIN_LISTEN: ":8081"
       TINYCHATGO_CLIENT_DOWNLOAD: "true"
-      TINYCHATGO_HTTPS_LISTEN: ":8443"
       # Without TLS paths, a persistent self-signed certificate is generated in /data.
       # TINYCHATGO_TLS_CERT: "/data/server.crt"
       # TINYCHATGO_TLS_KEY: "/data/server.key"

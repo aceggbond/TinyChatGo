@@ -35,7 +35,7 @@ func Run(logo, _ []byte) error {
 	keyFile := flags.String("tls-key", os.Getenv("TINYCHATGO_TLS_KEY"), "TLS private key file")
 	password := flags.String("access-password", os.Getenv("TINYCHATGO_ACCESS_PASSWORD"), "optional web access password (prefer the environment variable)")
 	adminPassword := flags.String("admin-password", os.Getenv("TINYCHATGO_ADMIN_PASSWORD"), "administrator password (required to enable /admin/)")
-	adminListen := flags.String("admin-listen", envOr("TINYCHATGO_ADMIN_LISTEN", ":8081"), "dedicated administrator HTTP listen address")
+	adminListen := flags.String("admin-listen", envOr("TINYCHATGO_ADMIN_LISTEN", ":8881"), "dedicated administrator HTTP listen address")
 	trustedProxies := flags.String("trusted-proxies", os.Getenv("TINYCHATGO_TRUSTED_PROXIES"), "trusted reverse proxy IPs/CIDRs")
 	requireApproval := flags.Bool("require-approval", envBool("TINYCHATGO_REQUIRE_APPROVAL", false), "require administrator approval for new accounts")
 	showUsers := flags.Bool("show-users", envBool("TINYCHATGO_SHOW_USERS", true), "show the user list")

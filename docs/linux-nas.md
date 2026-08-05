@@ -12,7 +12,7 @@ docker compose up -d --build
 
 浏览器访问 `http://NAS-IP:8080`。数据保存在当前目录的 `tinychatgo-data/`，升级容器不会丢失。
 
-默认使用三个互相独立的端口：HTTP `8080`、HTTPS `8443`、管理后台 `8081`。管理地址是 `http://NAS-IP:8081/admin/`；用户端口不会提供管理页面。使用 `TINYCHATGO_ADMIN_PASSWORD` 配置的独立密码登录，密码为空时管理监听不会启动。
+Docker 默认映射三个互相独立的端口：NAS HTTP `18080` → 容器 `8080`、NAS HTTPS `18443` → 容器 `8443`、管理后台 `8881` → 容器 `8881`。管理地址是 `http://NAS-IP:8881/admin/`；用户端口不会提供管理页面。使用 `TINYCHATGO_ADMIN_PASSWORD` 配置的独立密码登录，密码为空时管理监听不会启动。
 
 HTTPS 未指定证书文件时会在数据目录自动生成并复用自签名证书。首次访问会出现浏览器安全提示；本地 CA 文件是 `tinychatgo-data/hfs-go-ca.crt`。正式公网部署仍建议换成可信证书或使用 NAS 反向代理。
 
@@ -35,7 +35,7 @@ ARM64 NAS 将 `GOARCH` 改成 `arm64`。进程收到 `SIGTERM` 或 `Ctrl+C` 时�
 - `TINYCHATGO_DATA_DIR`：数据库及上传目录，默认当前目录
 - `TINYCHATGO_ACCESS_PASSWORD`：网页入口密码
 - `TINYCHATGO_ADMIN_PASSWORD`：独立管理员密码，用于 `/admin/`
-- `TINYCHATGO_ADMIN_LISTEN`：独立管理页面监听地址，默认 `:8081`
+- `TINYCHATGO_ADMIN_LISTEN`：可选的独立管理页面监听地址，默认 `:8881`
 - `TINYCHATGO_TRUSTED_PROXIES`：反向代理 IP/CIDR，多个值用逗号分隔
 - `TINYCHATGO_REQUIRE_APPROVAL`：新账号是否需要审批
 - `TINYCHATGO_SHOW_USERS`、`TINYCHATGO_PRIVATE_CHAT`、`TINYCHATGO_ALLOW_GROUPS`：聊天功能开关
