@@ -71,6 +71,7 @@ type Server struct {
 	brandLogo           []byte
 	chat                *chatHub
 	auth                *accountManager
+	admin               *adminManager
 	persistence         Persistence
 	visitorMu           sync.Mutex
 	visitorSeen         map[string]time.Time
@@ -89,6 +90,7 @@ func New(logWriter io.Writer) *Server {
 		handlerAccepting: true,
 		chat:             chat,
 		auth:             newAccountManager(),
+		admin:            newAdminManager(),
 		visitorSeen:      make(map[string]time.Time),
 	}
 	chat.logOperation = func(identity, operation string) {

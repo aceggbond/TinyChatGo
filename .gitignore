@@ -3,9 +3,11 @@
 *.exe~
 *.test
 /TinyChatGo*.zip
+/TinyChatGoServer-linux-*
 
 # Go build cache
 .gocache/
+.codex-cache/
 
 # Runtime state (may contain local shared paths)
 hfsgo.json

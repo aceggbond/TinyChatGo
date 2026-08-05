@@ -1,0 +1,7 @@
+.git
+.github
+.codex-cache
+tinychatgo-data
+TinyChatGoServer*
+*.exe
+*.syso
