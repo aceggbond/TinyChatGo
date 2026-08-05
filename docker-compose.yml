@@ -1,6 +1,9 @@
 services:
   tinychatgo:
-    build: .
+    build:
+      context: .
+      args:
+        GOPROXY: "https://goproxy.cn,direct"
     container_name: tinychatgo
     restart: unless-stopped
     ports:
