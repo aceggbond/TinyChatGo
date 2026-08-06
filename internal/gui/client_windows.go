@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"unsafe"
 
 	webview "github.com/jchv/go-webview2"
+	"github.com/jchv/go-webview2/pkg/edge"
 	"golang.org/x/sys/windows/registry"
 
 	"tinychatgo/internal/appinfo"
@@ -104,6 +106,13 @@ type clientRect struct {
 	Left, Top, Right, Bottom int32
 }
 
+type clientCOMGUID struct {
+	Data1 uint32
+	Data2 uint16
+	Data3 uint16
+	Data4 [8]byte
+}
+
 var (
 	clientController      *desktopClientController
 	clientWindowProc      = syscall.NewCallback(desktopClientWndProc)
@@ -111,7 +120,6 @@ var (
 	flashWindowEx         = user32.NewProc("FlashWindowEx")
 	clientWindowFromPoint = user32.NewProc("WindowFromPoint")
 	clientNotifyIconRect  = shell32.NewProc("Shell_NotifyIconGetRect")
-	clientKeybdEvent      = user32.NewProc("keybd_event")
 )
 
 func RunClient(logo []byte) error {
@@ -217,9 +225,9 @@ func RunClient(logo []byte) error {
 	}
 	view.Init(`document.addEventListener('DOMContentLoaded',function(){
 		document.documentElement.classList.add('native-desktop');
-		var style=document.createElement('style');style.textContent='.portal-nav{display:none!important}.portal-grid.layout-chat-users{grid-template-columns:300px minmax(0,1fr)!important}#download-panel{display:none!important}';document.head.appendChild(style);
+		var style=document.createElement('style');style.textContent='.portal-nav{display:none!important}.portal-grid.layout-chat-users{grid-template-columns:300px minmax(0,1fr)!important}#download-panel{display:none!important}.native-download-button{display:inline-flex!important;align-items:center!important;justify-content:center!important;height:36px!important;min-width:64px!important;padding:0 15px!important;line-height:1!important;vertical-align:middle!important}';document.head.appendChild(style);
 		var actions=document.querySelector('.top-actions'),button=document.getElementById('portal-download-button');
-		if(actions){if(!button){button=document.createElement('button');button.id='portal-download-button';button.className='notify-top';button.type='button';button.textContent='下载';actions.appendChild(button)}button.style.setProperty('display','inline-flex','important');button.onclick=function(event){event.preventDefault();event.stopImmediatePropagation();window.clientOpenDownloads().catch(function(error){alert(String(error.message||error||'无法打开系统下载管理器'))})}}
+		if(actions){if(!button){button=document.createElement('button');button.id='portal-download-button';button.type='button';button.textContent='下载';actions.appendChild(button)}button.classList.add('notify-top','native-download-button');button.style.setProperty('display','inline-flex','important');button.onclick=function(event){event.preventDefault();event.stopImmediatePropagation();window.clientOpenDownloads().catch(function(error){alert(String(error.message||error||'无法打开系统下载管理器'))})}}
 	});`)
 	view.SetHtml(renderDesktopClientHTML(controller.logoDataURL))
 	controller.setNativeWindowVisible(true)
@@ -450,21 +458,54 @@ func (c *desktopClientController) deleteDownload(raw string) error {
 }
 
 func (c *desktopClientController) openSystemDownloads() error {
-	if c == nil || c.hwnd == 0 {
+	if c == nil || c.view == nil {
 		return errors.New("客户端窗口不可用")
 	}
-	setForeground.Call(c.hwnd)
-	setFocus.Call(c.hwnd)
-	const (
-		virtualKeyControl = 0x11
-		virtualKeyJ       = 0x4A
-		keyEventKeyUp     = 0x0002
-	)
-	clientKeybdEvent.Call(virtualKeyControl, 0, 0, 0)
-	clientKeybdEvent.Call(virtualKeyJ, 0, 0, 0)
-	clientKeybdEvent.Call(virtualKeyJ, 0, keyEventKeyUp, 0)
-	clientKeybdEvent.Call(virtualKeyControl, 0, keyEventKeyUp, 0)
+	core, err := desktopClientCoreWebView2(c.view)
+	if err != nil {
+		return err
+	}
+	// ICoreWebView2_9, introduced with the default download dialog API.
+	iid := clientCOMGUID{Data1: 0x4d7b2eab, Data2: 0x9fdc, Data3: 0x468d, Data4: [8]byte{0xb9, 0x98, 0xa9, 0x26, 0x0b, 0x5e, 0xd6, 0x51}}
+	queryInterface := desktopClientCOMMethod(core, 0)
+	var downloads uintptr
+	result, _, _ := syscall.SyscallN(queryInterface, core, uintptr(unsafe.Pointer(&iid)), uintptr(unsafe.Pointer(&downloads)))
+	if int32(result) < 0 || downloads == 0 {
+		return fmt.Errorf("当前 WebView2 版本不支持系统下载面板（HRESULT 0x%08x）", uint32(result))
+	}
+	defer syscall.SyscallN(desktopClientCOMMethod(downloads, 2), downloads)
+	// Method 91 in the inherited ICoreWebView2_9 vtable is OpenDefaultDownloadDialog.
+	result, _, _ = syscall.SyscallN(desktopClientCOMMethod(downloads, 91), downloads)
+	if int32(result) < 0 {
+		return fmt.Errorf("无法打开系统下载面板（HRESULT 0x%08x）", uint32(result))
+	}
 	return nil
+}
+
+func desktopClientCoreWebView2(view webview.WebView) (uintptr, error) {
+	value := reflect.ValueOf(view)
+	if value.Kind() != reflect.Ptr || value.IsNil() {
+		return 0, errors.New("WebView2 尚未初始化")
+	}
+	browserField := value.Elem().FieldByName("browser")
+	if !browserField.IsValid() || !browserField.CanAddr() {
+		return 0, errors.New("无法访问 WebView2 浏览器实例")
+	}
+	browserValue := reflect.NewAt(browserField.Type(), unsafe.Pointer(browserField.UnsafeAddr())).Elem().Interface()
+	chromium, ok := browserValue.(*edge.Chromium)
+	if !ok || chromium == nil {
+		return 0, errors.New("WebView2 浏览器实例不可用")
+	}
+	coreField := reflect.ValueOf(chromium).Elem().FieldByName("webview")
+	if !coreField.IsValid() || coreField.Kind() != reflect.Ptr || coreField.IsNil() {
+		return 0, errors.New("WebView2 页面尚未就绪")
+	}
+	return coreField.Pointer(), nil
+}
+
+func desktopClientCOMMethod(instance uintptr, index uintptr) uintptr {
+	vtable := *(*uintptr)(unsafe.Pointer(instance))
+	return *(*uintptr)(unsafe.Pointer(vtable + index*unsafe.Sizeof(uintptr(0))))
 }
 
 func addClientAccessHeader(request *http.Request) {
