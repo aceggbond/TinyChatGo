@@ -162,30 +162,21 @@ jobs:
           merge-multiple: true
 
       - name: Publish GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          files=(
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: TinyChatGo ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
             dist/TinyChatGoServer.exe
             dist/TinyChatGo-Client-windows-amd64.exe
             dist/TinyChatGo-Client-macos-arm64.zip
             dist/TinyChatGo-Client-android.apk
-          )
-          echo "Publishing ${GITHUB_REPOSITORY} release ${GITHUB_REF_NAME}"
-          for attempt in 1 2 3; do
-            if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-              break
-            fi
-            gh release create "${GITHUB_REF_NAME}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --title "TinyChatGo ${GITHUB_REF_NAME}" \
-              --generate-notes || true
-            sleep 5
-          done
-          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null
-          gh release upload "${GITHUB_REF_NAME}" "${files[@]}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --clobber
+
+      - name: Verify GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.assets[].name')"
           for expected in TinyChatGoServer.exe TinyChatGo-Client-windows-amd64.exe TinyChatGo-Client-macos-arm64.zip TinyChatGo-Client-android.apk; do
             grep -Fxq "${expected}" <<<"${assets}" || { echo "Missing release asset: ${expected}"; exit 1; }
