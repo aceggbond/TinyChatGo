@@ -51,10 +51,11 @@ body{background:var(--bg)}button{border-radius:8px;box-shadow:none!important}.pr
 [data-user-ip]{cursor:pointer}.client-option-check{position:relative;appearance:none;-webkit-appearance:none;width:42px!important;height:24px!important;flex:0 0 42px;border:0;border-radius:99px;background:#cbd3de;outline:0;transition:.18s}.client-option-check:before{content:"";position:absolute;left:3px;top:3px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 2px 5px rgba(0,0,0,.16);transition:.18s}.client-option-check:checked{background:var(--blue)}.client-option-check:checked:before{transform:translateX(18px)}
 </style>
 <style>
-.portal-grid.layout-chat-users{grid-template-columns:72px 300px minmax(0,1fr)}
+.portal-grid.layout-chat-users{grid-template-columns:300px minmax(0,1fr)}
+.portal-nav,#portal-download-button,#web-download-row{display:none!important}
 .native-desktop .portal-grid.layout-chat-users{grid-template-columns:300px minmax(0,1fr)}
 .native-desktop .portal-nav{display:none}
-@media(max-width:900px){.portal-grid.layout-chat-users{grid-template-columns:64px 240px minmax(0,1fr)}}
+@media(max-width:900px){.portal-grid.layout-chat-users{grid-template-columns:240px minmax(0,1fr)}}
 @media(max-width:620px){.portal-grid.layout-chat-users{grid-template-columns:96px minmax(0,1fr)}.portal-nav{display:none}}
 </style>
 </head>

@@ -701,6 +701,10 @@ func (s *Server) serveClientDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	platform := clientDownloadPlatform(r)
+	if platform == "android" {
+		http.Redirect(w, r, "https://github.com/aceggbond/TinyChatGo/releases/download/"+appinfo.Tag+"/TinyChatGo-Client-android.apk", http.StatusTemporaryRedirect)
+		return
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		http.Error(w, "client executable unavailable", http.StatusServiceUnavailable)
@@ -709,11 +713,7 @@ func (s *Server) serveClientDownload(w http.ResponseWriter, r *http.Request) {
 	filename := "TinyChatGo-Client-windows-amd64.exe"
 	contentType := "application/vnd.microsoft.portable-executable"
 	downloadPath := filepath.Join(filepath.Dir(executable), filename)
-	if platform == "android" {
-		filename = "TinyChatGo-Client-android.apk"
-		contentType = "application/vnd.android.package-archive"
-		downloadPath = filepath.Join(filepath.Dir(executable), filename)
-	} else if platform == "macos-arm64" {
+	if platform == "macos-arm64" {
 		filename = "TinyChatGo-Client-macos-arm64.zip"
 		contentType = "application/zip"
 		downloadPath = filepath.Join(filepath.Dir(executable), filename)

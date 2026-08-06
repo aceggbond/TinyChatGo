@@ -111,6 +111,7 @@ var (
 	flashWindowEx         = user32.NewProc("FlashWindowEx")
 	clientWindowFromPoint = user32.NewProc("WindowFromPoint")
 	clientNotifyIconRect  = shell32.NewProc("Shell_NotifyIconGetRect")
+	clientKeybdEvent      = user32.NewProc("keybd_event")
 )
 
 func RunClient(logo []byte) error {
@@ -205,6 +206,7 @@ func RunClient(logo []byte) error {
 		"clientOpenDownload":      controller.openDownload,
 		"clientShowDownload":      controller.showDownload,
 		"clientDeleteDownload":    controller.deleteDownload,
+		"clientOpenDownloads":     controller.openSystemDownloads,
 	}
 	for name, binding := range bindings {
 		if err = view.Bind(name, binding); err != nil {
@@ -213,6 +215,12 @@ func RunClient(logo []byte) error {
 			return fmt.Errorf("注册客户端操作 %s 失败：%w", name, err)
 		}
 	}
+	view.Init(`document.addEventListener('DOMContentLoaded',function(){
+		document.documentElement.classList.add('native-desktop');
+		var style=document.createElement('style');style.textContent='.portal-nav{display:none!important}.portal-grid.layout-chat-users{grid-template-columns:300px minmax(0,1fr)!important}#download-panel{display:none!important}';document.head.appendChild(style);
+		var actions=document.querySelector('.top-actions'),button=document.getElementById('portal-download-button');
+		if(actions){if(!button){button=document.createElement('button');button.id='portal-download-button';button.className='notify-top';button.type='button';button.textContent='下载';actions.appendChild(button)}button.style.setProperty('display','inline-flex','important');button.onclick=function(event){event.preventDefault();event.stopImmediatePropagation();window.clientOpenDownloads().catch(function(error){alert(String(error.message||error||'无法打开系统下载管理器'))})}}
+	});`)
 	view.SetHtml(renderDesktopClientHTML(controller.logoDataURL))
 	controller.setNativeWindowVisible(true)
 	if err = instance.signalReady(); err != nil {
@@ -439,6 +447,24 @@ func (c *desktopClientController) deleteDownload(raw string) error {
 		return err
 	}
 	return os.Remove(path)
+}
+
+func (c *desktopClientController) openSystemDownloads() error {
+	if c == nil || c.hwnd == 0 {
+		return errors.New("客户端窗口不可用")
+	}
+	setForeground.Call(c.hwnd)
+	setFocus.Call(c.hwnd)
+	const (
+		virtualKeyControl = 0x11
+		virtualKeyJ       = 0x4A
+		keyEventKeyUp     = 0x0002
+	)
+	clientKeybdEvent.Call(virtualKeyControl, 0, 0, 0)
+	clientKeybdEvent.Call(virtualKeyJ, 0, 0, 0)
+	clientKeybdEvent.Call(virtualKeyJ, 0, keyEventKeyUp, 0)
+	clientKeybdEvent.Call(virtualKeyControl, 0, keyEventKeyUp, 0)
+	return nil
 }
 
 func addClientAccessHeader(request *http.Request) {
