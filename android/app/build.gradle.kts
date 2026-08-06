@@ -7,7 +7,7 @@ android {
         applicationId = "com.aceggbond.tinychatgo"
         minSdk = 26
         targetSdk = 35
-        versionCode = 102
+        versionCode = 103
         versionName = "1.0.0"
     }
     buildTypes { release { isMinifyEnabled = false; signingConfig = signingConfigs.getByName("debug") } }
