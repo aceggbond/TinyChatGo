@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -54,6 +55,13 @@ type desktopClientState struct {
 	AutoStart     bool   `json:"autoStart"`
 	Notifications bool   `json:"notifications"`
 	Sound         bool   `json:"sound"`
+}
+
+type desktopDownloadItem struct {
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	Size     int64  `json:"size"`
+	Modified int64  `json:"modified"`
 }
 
 type desktopClientController struct {
@@ -193,6 +201,10 @@ func RunClient(logo []byte) error {
 		"lanchatCopyImage":        controller.copyImage,
 		"lanchatCopyFile":         controller.copyFile,
 		"lanchatOpenExternal":     controller.openExternal,
+		"clientListDownloads":     controller.listDownloads,
+		"clientOpenDownload":      controller.openDownload,
+		"clientShowDownload":      controller.showDownload,
+		"clientDeleteDownload":    controller.deleteDownload,
 	}
 	for name, binding := range bindings {
 		if err = view.Bind(name, binding); err != nil {
@@ -345,6 +357,88 @@ func (c *desktopClientController) openExternal(rawURL string) error {
 		return errors.New("外部链接地址无效")
 	}
 	return exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", parsed.String()).Start()
+}
+
+func desktopDownloadsDirectory() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(filepath.Join(home, "Downloads")), nil
+}
+
+func safeDesktopDownloadPath(raw string) (string, error) {
+	directory, err := desktopDownloadsDirectory()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Clean(strings.TrimSpace(raw))
+	relative, err := filepath.Rel(directory, path)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", errors.New("下载文件路径无效")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("下载项目不是文件")
+	}
+	return path, nil
+}
+
+func (c *desktopClientController) listDownloads() ([]desktopDownloadItem, error) {
+	directory, err := desktopDownloadsDirectory()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return []desktopDownloadItem{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	items := make([]desktopDownloadItem, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		items = append(items, desktopDownloadItem{Name: entry.Name(), Path: filepath.Join(directory, entry.Name()), Size: info.Size(), Modified: info.ModTime().UnixMilli()})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Modified > items[j].Modified })
+	if len(items) > 100 {
+		items = items[:100]
+	}
+	return items, nil
+}
+
+func (c *desktopClientController) openDownload(raw string) error {
+	path, err := safeDesktopDownloadPath(raw)
+	if err != nil {
+		return err
+	}
+	return exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", path).Start()
+}
+
+func (c *desktopClientController) showDownload(raw string) error {
+	path, err := safeDesktopDownloadPath(raw)
+	if err != nil {
+		return err
+	}
+	return exec.Command("explorer.exe", "/select,"+path).Start()
+}
+
+func (c *desktopClientController) deleteDownload(raw string) error {
+	path, err := safeDesktopDownloadPath(raw)
+	if err != nil {
+		return err
+	}
+	return os.Remove(path)
 }
 
 func addClientAccessHeader(request *http.Request) {
