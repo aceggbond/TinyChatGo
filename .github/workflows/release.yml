@@ -132,7 +132,15 @@ jobs:
 
       - name: Build Android APK
         working-directory: android
-        run: gradle :app:assembleRelease
+        run: |
+          for attempt in 1 2 3; do
+            if gradle :app:assembleRelease; then
+              exit 0
+            fi
+            echo "Android build attempt ${attempt} failed; retrying..."
+            sleep 10
+          done
+          exit 1
 
       - name: Prepare Android release file
         run: cp android/app/build/outputs/apk/release/app-release.apk TinyChatGo-Client-android.apk
