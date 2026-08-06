@@ -171,13 +171,22 @@ jobs:
             dist/TinyChatGo-Client-macos-arm64.zip
             dist/TinyChatGo-Client-android.apk
           )
-          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" "${files[@]}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --clobber
-          else
-            gh release create "${GITHUB_REF_NAME}" "${files[@]}" \
+          echo "Publishing ${GITHUB_REPOSITORY} release ${GITHUB_REF_NAME}"
+          for attempt in 1 2 3; do
+            if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+              break
+            fi
+            gh release create "${GITHUB_REF_NAME}" \
               --repo "${GITHUB_REPOSITORY}" \
               --title "TinyChatGo ${GITHUB_REF_NAME}" \
-              --generate-notes
-          fi
+              --generate-notes || true
+            sleep 5
+          done
+          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null
+          gh release upload "${GITHUB_REF_NAME}" "${files[@]}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
+          assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.assets[].name')"
+          for expected in TinyChatGoServer.exe TinyChatGo-Client-windows-amd64.exe TinyChatGo-Client-macos-arm64.zip TinyChatGo-Client-android.apk; do
+            grep -Fxq "${expected}" <<<"${assets}" || { echo "Missing release asset: ${expected}"; exit 1; }
+          done
