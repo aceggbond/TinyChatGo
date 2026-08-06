@@ -113,8 +113,38 @@ jobs:
           name: macos-release
           path: TinyChatGo-Client-macos-arm64.zip
 
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build Android APK
+        working-directory: android
+        run: gradle :app:assembleRelease
+
+      - name: Prepare Android release file
+        run: cp android/app/build/outputs/apk/release/app-release.apk TinyChatGo-Client-android.apk
+
+      - name: Upload Android release file
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-release
+          path: TinyChatGo-Client-android.apk
+
   release:
-    needs: [windows, macos]
+    needs: [windows, macos, android]
     runs-on: ubuntu-latest
     steps:
       - name: Download release files
@@ -131,6 +161,7 @@ jobs:
             dist/TinyChatGoServer.exe
             dist/TinyChatGo-Client-windows-amd64.exe
             dist/TinyChatGo-Client-macos-arm64.zip
+            dist/TinyChatGo-Client-android.apk
           )
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" "${files[@]}" \

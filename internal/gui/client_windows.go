@@ -661,13 +661,15 @@ func (c *desktopClientController) notify(title, body, route, avatar string, ment
 	}
 	c.flashTaskbar()
 	c.startTrayFlash()
-	showBalloon := private || mentioned || !c.trayIconVisible()
-	if showBalloon {
-		c.mu.Lock()
-		c.notificationRoute = route
-		c.mu.Unlock()
-		c.showTrayNotification(title, body, avatar)
-	}
+	// Always show a native notification while the client is in the background.
+	// Whether Windows currently exposes the tray icon is not a reliable proxy for
+	// whether the user can see an incoming message (the overflow area moves and
+	// collapses dynamically), which previously made ordinary notifications appear
+	// only intermittently.
+	c.mu.Lock()
+	c.notificationRoute = route
+	c.mu.Unlock()
+	c.showTrayNotification(title, body, avatar)
 	return nil
 }
 

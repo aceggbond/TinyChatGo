@@ -76,6 +76,7 @@ func TestClientDownloadDetectsMacOSAndUsesArm64Release(t *testing.T) {
 	}{
 		{name: "client hint", platform: `"macOS"`, want: "macos-arm64"},
 		{name: "user agent", ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)", want: "macos-arm64"},
+		{name: "android user agent", ua: "Mozilla/5.0 (Linux; Android 14)", want: "android"},
 		{name: "windows", platform: `"Windows"`, ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", want: "windows-amd64"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

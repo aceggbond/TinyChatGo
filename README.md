@@ -2,7 +2,7 @@
 
 > Linux / NAS 无界面服务端现已支持，部署方法见 [docs/linux-nas.md](docs/linux-nas.md)。
 
-TinyChatGo 是轻量、安全的互联网聊天与文件分享系统。`TinyChatGoServer`（简称 **TCGS**）负责账号、权限、群聊和历史归档管理；用户登录后可通过浏览器、Windows 客户端或 macOS ARM64 客户端使用。
+TinyChatGo 是轻量、安全的互联网聊天与文件分享系统。`TinyChatGoServer`（简称 **TCGS**）负责账号、权限、群聊和历史归档管理；用户登录后可通过浏览器、Windows、macOS ARM64 或 Android 客户端使用。
 
 [下载 TinyChatGo v1.0.0](https://github.com/aceggbond/TinyChatGo/releases/tag/v1.0.0) · [Releases](https://github.com/aceggbond/TinyChatGo/releases) · [项目主页](https://github.com/aceggbond/TinyChatGo)
 
@@ -18,6 +18,7 @@ TinyChatGo 是轻量、安全的互联网聊天与文件分享系统。`TinyChat
 - 文件和图片自动归档、搜索和分页；附件使用 SHA-256 去重，相同内容只保存一份。
 - Windows 客户端支持开机启动、托盘驻留、声音、任务栏及托盘闪烁、带发送人头像的通知。
 - macOS ARM64 客户端支持菜单栏驻留、系统通知、自签名 HTTPS 和原生文件选择。
+- Android 客户端首次启动可填写 NAS 服务地址，支持文件选择、系统下载和原生消息通知；平板与横屏使用导航、会话、聊天三栏布局。
 - 支持 HTTP/HTTPS、自动生成证书、HTTP 跳转 HTTPS，以及可信代理、X-Forwarded-For 和 PROXY Protocol v1/v2。
 - 配置、账号、会话、聊天记录、归档索引和证书统一保存在 `tinychatgo.db`。
 
