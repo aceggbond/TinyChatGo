@@ -4,7 +4,7 @@
 
 TinyChatGo 是轻量、安全的互联网聊天与文件分享系统。`TinyChatGoServer`（简称 **TCGS**）负责账号、权限、群聊和历史归档管理；用户登录后可通过浏览器、Windows、macOS ARM64 或 Android 客户端使用。
 
-[下载 TinyChatGo v1.0.0](https://github.com/aceggbond/TinyChatGo/releases/tag/v1.0.0) · [Releases](https://github.com/aceggbond/TinyChatGo/releases) · [项目主页](https://github.com/aceggbond/TinyChatGo)
+[下载 TinyChatGo v1.0.1](https://github.com/aceggbond/TinyChatGo/releases/tag/v1.0.1) · [Releases](https://github.com/aceggbond/TinyChatGo/releases) · [项目主页](https://github.com/aceggbond/TinyChatGo)
 
 ## 主要功能
 

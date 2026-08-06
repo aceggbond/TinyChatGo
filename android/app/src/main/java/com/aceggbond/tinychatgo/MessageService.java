@@ -32,7 +32,7 @@ public class MessageService extends Service {
         web = new WebView(getApplicationContext());
         web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true);
         WebSettings settings = web.getSettings(); settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
-        settings.setUserAgentString(settings.getUserAgentString() + " TinyChatGo-Android-Background/1.0.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " TinyChatGo-Android-Background/1.0.1");
         web.addJavascriptInterface(new BackgroundBridge(), "TinyChatGoBackground");
         web.setWebViewClient(new WebViewClient() {
             @Override public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
