@@ -28,6 +28,9 @@ public class MainActivity extends Activity {
     private WebView web;
     private ValueCallback<Uri[]> fileCallback;
     private boolean askingPassword;
+    private static volatile boolean visible;
+
+    public static boolean isVisible() { return visible; }
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -35,6 +38,17 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 20);
         open();
+    }
+
+    @Override protected void onResume() { super.onResume(); visible = true; MessageService.setUserVisible(true); if (web != null) web.onResume(); handleRoute(getIntent()); }
+    @Override protected void onPause() { visible = false; MessageService.setUserVisible(false); if (web != null) web.onPause(); super.onPause(); }
+    @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); handleRoute(intent); }
+
+    private void handleRoute(Intent intent) {
+        if (web == null || intent == null) return;
+        String route = intent.getStringExtra("route"); if (route == null || route.isEmpty()) return;
+        intent.removeExtra("route");
+        web.evaluateJavascript("if(typeof window.lanchatOpenConversation==='function'){window.lanchatOpenConversation(" + JSONObject.quote(route) + ");document.documentElement.classList.add('android-chat-open')}", null);
     }
 
     private void open() {
@@ -65,6 +79,7 @@ public class MainActivity extends Activity {
         web.setDownloadListener((url, agent, disposition, mime, length) -> {
             DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
             request.addRequestHeader("User-Agent", agent); request.setMimeType(mime);
+            String cookie = CookieManager.getInstance().getCookie(url); if (cookie != null) request.addRequestHeader("Cookie", cookie);
             request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
             request.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, URLUtil.guessFileName(url, disposition, mime));
             ((DownloadManager)getSystemService(DOWNLOAD_SERVICE)).enqueue(request);
@@ -75,7 +90,7 @@ public class MainActivity extends Activity {
     private void installBridge() {
         String script = "window.lanchatNotify=function(t,b,r,a,m,p){TinyChatGoAndroid.notify(String(t),String(b),String(r));return Promise.resolve()};window.clientAndroid=true;"
             + "(function(){"
-            + "var grid=document.getElementById('portal-grid');if(!grid||!grid.dataset||grid.dataset.chat!=='1')return;"
+            + "var grid=document.getElementById('portal-grid');if(!grid||!grid.dataset||grid.dataset.chat!=='1')return;TinyChatGoAndroid.startBackground();"
             + "document.documentElement.classList.add('tinychatgo-android');"
             + "var oldNav=grid.querySelector('.portal-nav');if(oldNav)oldNav.style.display='none';"
             + "if(!document.getElementById('android-bottom-nav')){var nav=document.createElement('nav');nav.id='android-bottom-nav';nav.className='android-bottom-nav';"
@@ -143,6 +158,10 @@ public class MainActivity extends Activity {
     }
 
     public final class Bridge {
+        @JavascriptInterface public void startBackground() {
+            Intent service = new Intent(MainActivity.this, MessageService.class);
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service); else startService(service);
+        }
         @JavascriptInterface public void notify(String title, String body, String route) {
             if (hasWindowFocus()) return;
             Intent intent = new Intent(MainActivity.this, MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -160,5 +179,12 @@ public class MainActivity extends Activity {
         super.onActivityResult(request, result, data);
         if (request == 30 && fileCallback != null) { fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result, data)); fileCallback = null; }
     }
-    @Override public void onBackPressed() { if (web != null && web.canGoBack()) web.goBack(); else super.onBackPressed(); }
+    @Override public void onBackPressed() {
+        if (web != null) {
+            web.evaluateJavascript("document.documentElement.classList.contains('android-chat-open')", value -> {
+                if ("true".equals(value)) web.evaluateJavascript("document.documentElement.classList.remove('android-chat-open')", null);
+                else if (web.canGoBack()) web.goBack(); else moveTaskToBack(true);
+            });
+        } else moveTaskToBack(true);
+    }
 }
