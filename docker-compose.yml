@@ -16,8 +16,8 @@ services:
     volumes:
       - ./tinychatgo-data:/data
     environment:
-      TINYCHATGO_ACCESS_PASSWORD: "change-user-password"
-      TINYCHATGO_ADMIN_PASSWORD: "change-admin-password"
+      TINYCHATGO_ACCESS_PASSWORD: "${TINYCHATGO_ACCESS_PASSWORD:-change-user-password}"
+      TINYCHATGO_ADMIN_PASSWORD: "${TINYCHATGO_ADMIN_PASSWORD:-change-admin-password}"
       TINYCHATGO_CLIENT_DOWNLOAD: "true"
       # Without TLS paths, a persistent self-signed certificate is generated in /data.
       # TINYCHATGO_TLS_CERT: "/data/server.crt"

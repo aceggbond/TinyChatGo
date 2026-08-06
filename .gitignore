@@ -10,6 +10,7 @@
 .codex-cache/
 
 # Runtime state (may contain local shared paths)
+.env
 hfsgo.json
 hfs-go.config
 hfs-go-ca.crt
