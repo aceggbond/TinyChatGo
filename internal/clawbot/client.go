@@ -142,7 +142,12 @@ func (c *Client) SendMedia(ctx context.Context, credentials Credentials, to, con
 	if err != nil {
 		return err
 	}
-	media := Media{EncryptQueryParam: uploaded.DownloadParam, AESKey: base64.StdEncoding.EncodeToString(uploaded.Key), EncryptType: 1}
+	// Weixin expects aes_key in outbound CDN media to be base64(hex(key)),
+	// rather than base64(raw key). getuploadurl still receives the ordinary
+	// hexadecimal key. Sending the raw-key encoding makes sendmessage fail with
+	// ret=-2 / "prepare failed" after an otherwise successful CDN upload.
+	hexKey := hex.EncodeToString(uploaded.Key)
+	media := Media{EncryptQueryParam: uploaded.DownloadParam, AESKey: base64.StdEncoding.EncodeToString([]byte(hexKey)), EncryptType: 1}
 	item := MessageItem{}
 	if image {
 		item.Type = 2
@@ -162,17 +167,9 @@ func (c *Client) DownloadMedia(ctx context.Context, media Media) ([]byte, error)
 	if target == "" {
 		return nil, errors.New("微信媒体缺少下载地址")
 	}
-	key, err := base64.StdEncoding.DecodeString(media.AESKey)
+	key, err := decodeMediaAESKey(media.AESKey)
 	if err != nil {
-		return nil, fmt.Errorf("解析微信媒体密钥: %w", err)
-	}
-	if len(key) == 32 {
-		if decoded, decodeErr := hex.DecodeString(string(key)); decodeErr == nil {
-			key = decoded
-		}
-	}
-	if len(key) != 16 {
-		return nil, errors.New("微信媒体密钥长度无效")
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
@@ -191,6 +188,28 @@ func (c *Client) DownloadMedia(ctx context.Context, media Media) ([]byte, error)
 		return nil, err
 	}
 	return decryptECB(ciphertext, key)
+}
+
+func decodeMediaAESKey(value string) ([]byte, error) {
+	value = strings.TrimSpace(value)
+	if len(value) == 32 {
+		if key, err := hex.DecodeString(value); err == nil {
+			return key, nil
+		}
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("解析微信媒体密钥: %w", err)
+	}
+	if len(decoded) == 32 {
+		if key, decodeErr := hex.DecodeString(string(decoded)); decodeErr == nil {
+			return key, nil
+		}
+	}
+	if len(decoded) != 16 {
+		return nil, errors.New("微信媒体密钥长度无效")
+	}
+	return decoded, nil
 }
 
 func (c *Client) sendItem(ctx context.Context, credentials Credentials, to, contextToken string, item MessageItem) error {

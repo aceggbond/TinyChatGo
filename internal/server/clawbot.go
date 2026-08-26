@@ -9,9 +9,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	qrcode "github.com/skip2/go-qrcode"
 
 	"tinychatgo/internal/clawbot"
 )
@@ -89,7 +92,40 @@ func (m *clawBotManager) publicState(accountID string) clawBotPublicState {
 	if binding == nil {
 		return clawBotPublicState{Status: "unbound", Messages: []ClawBotMessage{}}
 	}
-	return clawBotPublicState{Status: binding.Status, QRCodeURL: binding.QRCodeURL, QRExpiresAt: binding.QRExpiresAt, ForwardEnabled: binding.ForwardEnabled, BoundAt: binding.BoundAt, LastMessageAt: binding.LastMessageAt, LastError: binding.LastError, Messages: append([]ClawBotMessage(nil), binding.Messages...)}
+	status, qrURL := binding.Status, ""
+	if status == "waiting" && !binding.QRExpiresAt.IsZero() && time.Now().After(binding.QRExpiresAt) {
+		status = "unbound"
+	}
+	if status == "waiting" && binding.QRCodeURL != "" {
+		// qrcode_img_content is QR payload text, not an image URL. Expose a
+		// same-origin PNG endpoint so desktop WebView and browsers never depend
+		// on a temporary remote image address.
+		qrURL = "/__hfs/clawbot/qr-image?v=" + strconv.FormatInt(binding.UpdatedAt.UnixNano(), 10)
+	}
+	messages := append([]ClawBotMessage(nil), binding.Messages...)
+	for index := range messages {
+		if (messages[index].Kind == "image" || messages[index].Kind == "file") && messages[index].FileURL == "" {
+			messages[index].Kind = "text"
+			if messages[index].Mine {
+				messages[index].Text = "[历史附件已发送，但旧版本没有保存本地预览]"
+			} else {
+				messages[index].Text = "[历史微信附件接收失败，请在微信中重新发送]"
+			}
+		}
+	}
+	return clawBotPublicState{Status: status, QRCodeURL: qrURL, QRExpiresAt: binding.QRExpiresAt, ForwardEnabled: binding.ForwardEnabled, BoundAt: binding.BoundAt, LastMessageAt: binding.LastMessageAt, LastError: binding.LastError, Messages: messages}
+}
+
+func (m *clawBotManager) qrImage(accountID string) ([]byte, error) {
+	m.mu.RLock()
+	binding := m.bindings[accountID]
+	if binding == nil || binding.Status != "waiting" || binding.QRCodeURL == "" || (!binding.QRExpiresAt.IsZero() && time.Now().After(binding.QRExpiresAt)) {
+		m.mu.RUnlock()
+		return nil, errors.New("微信绑定二维码已过期")
+	}
+	content := binding.QRCodeURL
+	m.mu.RUnlock()
+	return qrcode.Encode(content, qrcode.Medium, 320)
 }
 
 func (m *clawBotManager) saveLocked(binding *ClawBotBinding) error {
@@ -163,10 +199,20 @@ func (m *clawBotManager) pollQR(accountID, code string) {
 			m.startMonitor(accountID)
 			return
 		}
-		m.setError(accountID, "微信绑定未完成："+status.Status, "unbound")
+		m.setQRError(accountID, code, "微信绑定未完成："+status.Status)
 		return
 	}
-	m.setError(accountID, "绑定二维码已过期，请刷新", "unbound")
+	m.setQRError(accountID, code, "绑定二维码已过期，正在刷新")
+}
+
+func (m *clawBotManager) setQRError(accountID, code, message string) {
+	m.mu.Lock()
+	if binding := m.bindings[accountID]; binding != nil && binding.QRCode == code {
+		binding.Status, binding.QRCode, binding.QRCodeURL = "unbound", "", ""
+		binding.QRExpiresAt, binding.LastError = time.Time{}, message
+		_ = m.saveLocked(binding)
+	}
+	m.mu.Unlock()
 }
 
 func (m *clawBotManager) startMonitor(accountID string) {
@@ -234,7 +280,11 @@ func (m *clawBotManager) monitor(ctx context.Context, accountID string) {
 				case 2:
 					message.Kind, message.Text, message.FileName, message.MIME = "image", "[微信图片]", "微信图片.jpg", "image/jpeg"
 					if item.Image != nil {
-						m.cacheIncomingMedia(ctx, accountID, &message, item.Image.Media)
+						media := item.Image.Media
+						if media.AESKey == "" {
+							media.AESKey = item.Image.AESKey
+						}
+						m.cacheIncomingMedia(ctx, accountID, &message, media)
 					}
 				case 4:
 					message.Kind, message.Text = "file", "[微信文件]"
@@ -260,11 +310,14 @@ func (m *clawBotManager) monitor(ctx context.Context, accountID string) {
 
 func (m *clawBotManager) cacheIncomingMedia(ctx context.Context, accountID string, message *ClawBotMessage, media clawbot.Media) {
 	if message == nil || m.persistence == nil {
+		if message != nil {
+			message.Kind, message.Text = "text", message.Text+"（服务器未配置附件存储）"
+		}
 		return
 	}
 	data, err := m.client.DownloadMedia(ctx, media)
 	if err != nil {
-		message.Text += "（下载失败）"
+		message.Kind, message.Text = "text", message.Text+"（接收失败："+err.Error()+"）"
 		return
 	}
 	stored, err := m.persistence.SaveChatAttachment("clawbot:"+accountID, ChatMessage{
@@ -272,7 +325,7 @@ func (m *clawBotManager) cacheIncomingMedia(ctx context.Context, accountID strin
 		FileName: message.FileName, Mime: message.MIME, FileSize: int64(len(data)), SentAt: message.SentAt,
 	}, bytes.NewReader(data), 1<<30)
 	if err != nil {
-		message.Text += "（保存失败）"
+		message.Kind, message.Text = "text", message.Text+"（保存失败："+err.Error()+"）"
 		return
 	}
 	message.FileURL, message.FileSize = chatAttachmentURL(stored), int64(len(data))
@@ -343,14 +396,28 @@ func (m *clawBotManager) sendMedia(accountID, fileName, mimeType string, data []
 		m.setError(accountID, err.Error(), "bound")
 		return err
 	}
+	now := time.Now().UTC()
+	kind := "file"
+	if image {
+		kind = "image"
+	}
+	message := ClawBotMessage{ID: fmt.Sprintf("local-%d", now.UnixNano()), Kind: kind, Text: "[已发送到微信]", FileName: fileName, MIME: mimeType, FileSize: int64(len(data)), Mine: true, SentAt: now}
+	if m.persistence != nil {
+		stored, storeErr := m.persistence.SaveChatAttachment("clawbot:"+accountID, ChatMessage{
+			ID: message.ID, Kind: kind, Sender: "user", ClientID: accountID, TargetID: "__clawbot__", Private: true,
+			FileName: fileName, Mime: mimeType, FileSize: int64(len(data)), SentAt: now,
+		}, bytes.NewReader(data), 1<<30)
+		if storeErr == nil {
+			message.FileURL, message.FileSize = chatAttachmentURL(stored), int64(len(data))
+		} else {
+			message.Kind, message.Text = "text", "文件已发送到微信，但本地预览保存失败："+storeErr.Error()
+		}
+	} else {
+		message.Kind, message.Text = "text", "文件已发送到微信，但服务器未配置附件存储"
+	}
 	m.mu.Lock()
 	if current := m.bindings[accountID]; current != nil {
-		now := time.Now().UTC()
-		kind := "file"
-		if image {
-			kind = "image"
-		}
-		current.Messages = append(current.Messages, ClawBotMessage{ID: fmt.Sprintf("local-%d", now.UnixNano()), Kind: kind, Text: "[已发送到微信]", FileName: fileName, MIME: mimeType, FileSize: int64(len(data)), Mine: true, SentAt: now})
+		current.Messages = append(current.Messages, message)
 		current.LastMessageAt, current.LastError = now, ""
 		_ = m.saveLocked(current)
 	}
@@ -454,6 +521,20 @@ func (s *Server) serveClawBotAPI(w http.ResponseWriter, r *http.Request, account
 		return
 	}
 	switch r.URL.Path {
+	case "/__hfs/clawbot/qr-image":
+		if r.Method != http.MethodGet {
+			write(http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		png, err := s.clawbot.qrImage(account.ID)
+		if err != nil {
+			write(http.StatusGone, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Content-Length", strconv.Itoa(len(png)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(png)
 	case "/__hfs/clawbot/state":
 		if r.Method != http.MethodGet {
 			write(http.StatusMethodNotAllowed, map[string]any{"ok": false})
