@@ -33,6 +33,7 @@ var (
 	bucketAccess           = []byte("access")
 	bucketAccounts         = []byte("accounts")
 	bucketSessions         = []byte("account-sessions")
+	bucketClawBot          = []byte("clawbot-bindings")
 
 	keySettings = []byte("settings")
 	keyShares   = []byte("shares")
@@ -85,7 +86,7 @@ func Open(path string) (*DB, error) {
 		attachmentRoot: filepath.Join(filepath.Dir(absolute), "chat_files"),
 	}
 	if err = raw.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bucketApp, bucketUsers, bucketRemarks, bucketMessages, bucketAttachments, bucketAttachmentHashes, bucketAccess, bucketAccounts, bucketSessions} {
+		for _, name := range [][]byte{bucketApp, bucketUsers, bucketRemarks, bucketMessages, bucketAttachments, bucketAttachmentHashes, bucketAccess, bucketAccounts, bucketSessions, bucketClawBot} {
 			if _, createErr := tx.CreateBucketIfNotExists(name); createErr != nil {
 				return createErr
 			}
@@ -100,6 +101,41 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("create chat attachment directory: %w", err)
 	}
 	return store, nil
+}
+
+func (d *DB) LoadClawBotBindings() ([]server.ClawBotBinding, error) {
+	result := make([]server.ClawBotBinding, 0)
+	err := d.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketClawBot).ForEach(func(_, value []byte) error {
+			var binding server.ClawBotBinding
+			if err := json.Unmarshal(value, &binding); err != nil {
+				return err
+			}
+			result = append(result, binding)
+			return nil
+		})
+	})
+	return result, err
+}
+
+func (d *DB) SaveClawBotBinding(binding server.ClawBotBinding) error {
+	binding.AccountID = strings.TrimSpace(binding.AccountID)
+	if binding.AccountID == "" {
+		return errors.New("clawbot account id is required")
+	}
+	encoded, err := json.Marshal(binding)
+	if err != nil {
+		return err
+	}
+	return d.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketClawBot).Put([]byte(binding.AccountID), encoded)
+	})
+}
+
+func (d *DB) DeleteClawBotBinding(accountID string) error {
+	return d.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketClawBot).Delete([]byte(strings.TrimSpace(accountID)))
+	})
 }
 
 func (d *DB) Path() string { return d.path }

@@ -4,10 +4,11 @@
 
 TinyChatGo 是轻量、安全的互联网聊天与文件分享系统。`TinyChatGoServer`（简称 **TCGS**）负责账号、权限、群聊和历史归档管理；用户登录后可通过浏览器、Windows、macOS ARM64 或 Android 客户端使用。
 
-[下载 TinyChatGo v1.0.1](https://github.com/aceggbond/TinyChatGo/releases/tag/v1.0.1) · [Releases](https://github.com/aceggbond/TinyChatGo/releases) · [项目主页](https://github.com/aceggbond/TinyChatGo)
+[下载 TinyChatGo v1.1.0](https://github.com/aceggbond/TinyChatGo/releases/tag/v1.1.0) · [Releases](https://github.com/aceggbond/TinyChatGo/releases) · [项目主页](https://github.com/aceggbond/TinyChatGo)
 
 ## 主要功能
 
+- 微信 ClawBot：每个用户可独立扫码绑定自己的微信，在固定首个会话中与微信双向发送文字、图片和文件；可把 TinyChatGo 私信转发到微信，管理员可查看绑定状态并强制解绑。
 - 用户名和密码注册、登录，密码使用 Argon2id 哈希保存，登录状态使用 HttpOnly Cookie。
 - 可选“新用户需要管理员审批”，后台可批准、拒绝、禁用、删除账号及重置用户密码。
 - 可选 Web 首层访问密码；桌面客户端可以在编译时内置服务端地址和访问密码。

@@ -66,6 +66,7 @@ func (s *Server) SetPersistence(persistence Persistence) error {
 		s.persistence = nil
 		s.mu.Unlock()
 		s.auth.setPersistence(nil)
+		s.clawbot.setPersistence(nil)
 		return nil
 	}
 	users, messages, err := persistence.LoadChatState()
@@ -190,7 +191,10 @@ func (s *Server) SetPersistence(persistence Persistence) error {
 	s.mu.Lock()
 	s.persistence = persistence
 	s.mu.Unlock()
-	return s.auth.setPersistence(persistence)
+	if err := s.auth.setPersistence(persistence); err != nil {
+		return err
+	}
+	return s.clawbot.setPersistence(persistence)
 }
 
 func (s *Server) Persistence() Persistence {
@@ -636,6 +640,8 @@ func chatConversationVisibleToIP(conversationID, ip string) bool {
 		return false
 	case conversationID == ChatGroupConversationID:
 		return true
+	case strings.HasPrefix(conversationID, "clawbot:"):
+		return normalizeChatIdentity(strings.TrimPrefix(conversationID, "clawbot:")) == ip
 	case strings.HasPrefix(conversationID, adminConversationPrefix):
 		return normalizeChatIdentity(strings.TrimPrefix(conversationID, adminConversationPrefix)) == ip
 	case strings.HasPrefix(conversationID, directConversationPrefix):

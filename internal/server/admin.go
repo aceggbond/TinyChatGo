@@ -283,6 +283,20 @@ func (s *Server) serveAdmin(w http.ResponseWriter, r *http.Request, clientIP str
 			return
 		}
 		adminJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case "/__admin/clawbot/unbind":
+		var input struct{ ID string }
+		if r.Method != http.MethodPost {
+			adminJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false})
+			return
+		}
+		if !decodeAdminJSON(w, r, &input) {
+			return
+		}
+		if err := s.clawbot.unbind(normalizeAccountID(input.ID)); err != nil {
+			adminJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "message": err.Error()})
+			return
+		}
+		adminJSON(w, http.StatusOK, map[string]any{"ok": true})
 	case "/__admin/user/delete":
 		var input struct{ ID string }
 		if r.Method != http.MethodPost {
@@ -301,6 +315,7 @@ func (s *Server) serveAdmin(w http.ResponseWriter, r *http.Request, clientIP str
 				break
 			}
 		}
+		_ = s.clawbot.unbind(input.ID)
 		_ = s.RemoveChatVisitor(input.ID)
 		adminJSON(w, http.StatusOK, map[string]any{"ok": true})
 	case "/__admin/group/rename":
@@ -507,16 +522,19 @@ func (s *Server) serveAdmin(w http.ResponseWriter, r *http.Request, clientIP str
 }
 
 type adminUserRow struct {
-	ID          string         `json:"id"`
-	Username    string         `json:"username,omitempty"`
-	Name        string         `json:"name,omitempty"`
-	Status      AccountStatus  `json:"status,omitempty"`
-	Online      bool           `json:"online"`
-	Blacklisted bool           `json:"blacklisted"`
-	FirstSeen   time.Time      `json:"firstSeen,omitempty"`
-	LastSeen    time.Time      `json:"lastSeen,omitempty"`
-	LastIP      string         `json:"lastIp,omitempty"`
-	Client      ChatClientInfo `json:"client"`
+	ID             string         `json:"id"`
+	Username       string         `json:"username,omitempty"`
+	Name           string         `json:"name,omitempty"`
+	Status         AccountStatus  `json:"status,omitempty"`
+	Online         bool           `json:"online"`
+	Blacklisted    bool           `json:"blacklisted"`
+	FirstSeen      time.Time      `json:"firstSeen,omitempty"`
+	LastSeen       time.Time      `json:"lastSeen,omitempty"`
+	LastIP         string         `json:"lastIp,omitempty"`
+	Client         ChatClientInfo `json:"client"`
+	ClawBotStatus  string         `json:"clawBotStatus"`
+	ClawBotForward bool           `json:"clawBotForward"`
+	ClawBotBoundAt time.Time      `json:"clawBotBoundAt,omitempty"`
 }
 
 func (s *Server) adminState() map[string]any {
@@ -533,6 +551,8 @@ func (s *Server) adminState() map[string]any {
 		if found {
 			row.Name, row.Blacklisted, row.FirstSeen, row.LastSeen, row.Client = profile.Name, profile.Blacklisted, profile.FirstSeen, profile.LastSeen, profile.Client
 		}
+		claw := s.clawbot.publicState(account.ID)
+		row.ClawBotStatus, row.ClawBotForward, row.ClawBotBoundAt = claw.Status, claw.ForwardEnabled, claw.BoundAt
 		users = append(users, row)
 		seen[account.ID] = true
 	}

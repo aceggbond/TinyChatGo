@@ -55,7 +55,7 @@ public class MainActivity extends Activity {
         web = new WebView(this); web.setBackgroundColor(Color.WHITE); setContentView(web);
         WebSettings s = web.getSettings(); s.setJavaScriptEnabled(true); s.setDomStorageEnabled(true);
         s.setAllowFileAccess(true); s.setMediaPlaybackRequiresUserGesture(false);
-        s.setUserAgentString(s.getUserAgentString() + " TinyChatGo-Android/1.0.1");
+        s.setUserAgentString(s.getUserAgentString() + " TinyChatGo-Android/1.1.0");
         web.addJavascriptInterface(new Bridge(), "TinyChatGoAndroid");
         web.setWebViewClient(new WebViewClient() {
             @Override public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {

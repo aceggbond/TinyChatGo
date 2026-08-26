@@ -154,6 +154,7 @@ type chatHub struct {
 	notify          func()
 	notifyPending   bool
 	logOperation    func(ip, operation string)
+	forwardMessage  func(accountID string, message ChatMessage)
 	persistence     Persistence
 	users           map[string]*ChatUser
 	remarks         map[string]map[string]string
@@ -2480,6 +2481,9 @@ func (h *chatHub) receiveDirectMessage(peer *chatPeer, targetID string, message 
 	}
 	h.mu.Unlock()
 	shutdownSlowChatPeers(slow)
+	if h.forwardMessage != nil {
+		go h.forwardMessage(targetID, stored)
+	}
 	if delivered == 0 {
 		return errors.New("私信连接繁忙，请稍后重试")
 	}
@@ -3025,6 +3029,9 @@ func (h *chatHub) receiveHTTPAttachment(ip, targetID, name, mimeType, kind strin
 	h.scheduleNotifyLocked()
 	h.mu.Unlock()
 	shutdownSlowChatPeers(slow)
+	if targetID != "" && h.forwardMessage != nil {
+		go h.forwardMessage(targetID, stored)
+	}
 	h.logIPOperation(ip, receivedChatOperation(stored))
 	return nil
 }

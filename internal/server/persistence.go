@@ -269,3 +269,45 @@ type AccountPersistence interface {
 	DeleteAccountSession(string) error
 	DeleteAccountSessions(string) error
 }
+
+// ClawBotBinding contains the durable state of one TinyChatGo account's
+// official Weixin ClawBot connection. BotToken is a credential and must never
+// be returned by browser or administrator APIs.
+type ClawBotBinding struct {
+	AccountID      string           `json:"accountId"`
+	Status         string           `json:"status"`
+	BotToken       string           `json:"botToken,omitempty"`
+	BotID          string           `json:"botId,omitempty"`
+	WeixinUserID   string           `json:"weixinUserId,omitempty"`
+	BaseURL        string           `json:"baseUrl,omitempty"`
+	QRCode         string           `json:"qrCode,omitempty"`
+	QRCodeURL      string           `json:"qrCodeUrl,omitempty"`
+	QRExpiresAt    time.Time        `json:"qrExpiresAt,omitempty"`
+	UpdatesBuffer  string           `json:"updatesBuffer,omitempty"`
+	ContextToken   string           `json:"contextToken,omitempty"`
+	ForwardEnabled bool             `json:"forwardEnabled"`
+	BoundAt        time.Time        `json:"boundAt,omitempty"`
+	UpdatedAt      time.Time        `json:"updatedAt"`
+	LastMessageAt  time.Time        `json:"lastMessageAt,omitempty"`
+	LastError      string           `json:"lastError,omitempty"`
+	Messages       []ClawBotMessage `json:"messages,omitempty"`
+}
+
+type ClawBotMessage struct {
+	ID       string    `json:"id"`
+	Kind     string    `json:"kind"`
+	Text     string    `json:"text,omitempty"`
+	FileName string    `json:"fileName,omitempty"`
+	FileURL  string    `json:"fileUrl,omitempty"`
+	MIME     string    `json:"mime,omitempty"`
+	FileSize int64     `json:"fileSize,omitempty"`
+	Mine     bool      `json:"mine"`
+	SentAt   time.Time `json:"sentAt"`
+}
+
+// ClawBotPersistence is optional so small embedders remain source compatible.
+type ClawBotPersistence interface {
+	LoadClawBotBindings() ([]ClawBotBinding, error)
+	SaveClawBotBinding(ClawBotBinding) error
+	DeleteClawBotBinding(string) error
+}

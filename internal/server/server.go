@@ -72,6 +72,7 @@ type Server struct {
 	chat                *chatHub
 	auth                *accountManager
 	admin               *adminManager
+	clawbot             *clawBotManager
 	persistence         Persistence
 	visitorMu           sync.Mutex
 	visitorSeen         map[string]time.Time
@@ -91,6 +92,7 @@ func New(logWriter io.Writer) *Server {
 		chat:             chat,
 		auth:             newAccountManager(),
 		admin:            newAdminManager(),
+		clawbot:          newClawBotManager(logger),
 		visitorSeen:      make(map[string]time.Time),
 	}
 	chat.logOperation = func(identity, operation string) {
@@ -117,6 +119,12 @@ func New(logWriter io.Writer) *Server {
 				At: at, IP: actualIP, AccountID: identity, Username: username, Operation: operation,
 			})
 		}
+	}
+	chat.forwardMessage = func(accountID string, message ChatMessage) {
+		result.mu.RLock()
+		persistence := result.persistence
+		result.mu.RUnlock()
+		result.clawbot.forwardIncoming(accountID, message, persistence)
 	}
 	return result
 }
@@ -940,6 +948,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		operation = "账号禁止访问"
 		status = http.StatusForbidden
 		http.Error(lw, "该账号已被管理员禁止访问", http.StatusForbidden)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/__hfs/clawbot/") {
+		operation = "微信 ClawBot"
+		s.serveClawBotAPI(lw, r, account)
 		return
 	}
 	if r.URL.Path == "/__hfs/chat/status" {
