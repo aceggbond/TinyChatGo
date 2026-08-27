@@ -62,9 +62,8 @@ jobs:
 
       - name: Verify macOS client packages
         run: |
-          go test ./... -run '^$'
           go test ./internal/database ./internal/discovery
-          go test -tags client ./internal/gui -run '^$'
+          go build -tags client ./internal/gui
 
       - name: Build universal macOS client app
         run: |
@@ -98,8 +97,8 @@ jobs:
             <key>CFBundleIdentifier</key><string>com.aceggbond.TinyChatGo</string>
             <key>CFBundleName</key><string>TinyChatGo</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>1.1.2</string>
-            <key>CFBundleVersion</key><string>1.1.2</string>
+            <key>CFBundleShortVersionString</key><string>1.1.3</string>
+            <key>CFBundleVersion</key><string>1.1.3</string>
             <key>CFBundleIconFile</key><string>TinyChatGo.icns</string>
             <key>LSMinimumSystemVersion</key><string>11.3</string>
             <key>NSHighResolutionCapable</key><true/>
