@@ -347,7 +347,7 @@ func (c *Client) request(ctx context.Context, method, baseURL, endpoint, token s
 }
 
 func baseInfo() map[string]string {
-	return map[string]string{"channel_version": channelVersion, "bot_agent": "TinyChatGo/1.1.4"}
+	return map[string]string{"channel_version": channelVersion, "bot_agent": "TinyChatGo/1.1.5"}
 }
 func randomHex(size int) string {
 	raw := make([]byte, size)

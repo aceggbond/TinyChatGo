@@ -260,9 +260,7 @@ func (m *clawBotManager) monitor(ctx context.Context, accountID string) {
 			current.UpdatesBuffer = updates.Buffer
 		}
 		for _, incoming := range updates.Messages {
-			if incoming.ContextToken != "" {
-				current.ContextToken = incoming.ContextToken
-			}
+			updateClawBotReplyRoute(current, incoming)
 			if incoming.MessageType != 1 {
 				continue
 			}
@@ -310,6 +308,23 @@ func (m *clawBotManager) monitor(ctx context.Context, accountID string) {
 		current.LastError = ""
 		_ = m.saveLocked(current)
 		m.mu.Unlock()
+	}
+}
+
+// updateClawBotReplyRoute learns the actual Weixin peer from delivered
+// messages. A small number of accounts receive a provisional ilink_user_id at
+// QR binding time; sendmessage may return ret=0 for that stale ID while Weixin
+// silently delivers nothing. The sender and context token from getupdates are
+// the authoritative route for replies and must be persisted together.
+func updateClawBotReplyRoute(binding *ClawBotBinding, incoming clawbot.Message) {
+	if binding == nil {
+		return
+	}
+	if peer := strings.TrimSpace(incoming.FromUserID); peer != "" && peer != binding.BotID {
+		binding.WeixinUserID = peer
+	}
+	if token := strings.TrimSpace(incoming.ContextToken); token != "" {
+		binding.ContextToken = token
 	}
 }
 
