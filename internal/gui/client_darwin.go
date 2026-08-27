@@ -3,8 +3,8 @@
 package gui
 
 /*
-#cgo CFLAGS: -x objective-c -fobjc-arc -fblocks -mmacosx-version-min=11.0
-#cgo LDFLAGS: -mmacosx-version-min=11.0 -framework Cocoa -framework WebKit -framework Security -framework UserNotifications
+#cgo CFLAGS: -x objective-c -fobjc-arc -fblocks -mmacosx-version-min=11.3
+#cgo LDFLAGS: -mmacosx-version-min=11.3 -framework Cocoa -framework WebKit -framework Security -framework UserNotifications
 
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>

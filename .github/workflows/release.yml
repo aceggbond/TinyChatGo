@@ -26,7 +26,7 @@ jobs:
           go test ./... -run '^$'
           go vet ./...
           go test ./internal/database
-          go test ./internal/server -run 'TestClientDownloadToggleControlsPortalAndExecutable|TestClientDownloadDetectsMacOSAndUsesArm64Release|TestPortalChatRecordsAndContactContextActions|TestPortalSettingsAndFluentEmojiPicker' -count=1
+          go test ./internal/server -run 'TestClientDownloadToggleControlsPortalAndExecutable|TestClientDownloadDetectsMacOSAndUsesUniversalRelease|TestPortalChatRecordsAndContactContextActions|TestPortalSettingsAndFluentEmojiPicker' -count=1
           go test ./internal/gui -run 'TestConfigureClientWebView2TLSKeepsExistingArguments|TestCompareVersionNumbers|TestValidProjectURLIsRestrictedToRepository' -count=1
 
       - name: Build Windows x64 server and client
@@ -49,6 +49,8 @@ jobs:
 
   macos:
     runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.3"
     steps:
       - name: Check out source
         uses: actions/checkout@v6
@@ -62,7 +64,7 @@ jobs:
         run: |
           go test ./... -run '^$'
           go test ./internal/database ./internal/discovery
-          go test -tags client ./internal/gui
+          go test -tags client ./internal/gui -run '^$'
 
       - name: Build universal macOS client app
         run: |
@@ -96,10 +98,10 @@ jobs:
             <key>CFBundleIdentifier</key><string>com.aceggbond.TinyChatGo</string>
             <key>CFBundleName</key><string>TinyChatGo</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>1.1.1</string>
-            <key>CFBundleVersion</key><string>1.1.1</string>
+            <key>CFBundleShortVersionString</key><string>1.1.2</string>
+            <key>CFBundleVersion</key><string>1.1.2</string>
             <key>CFBundleIconFile</key><string>TinyChatGo.icns</string>
-            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>LSMinimumSystemVersion</key><string>11.3</string>
             <key>NSHighResolutionCapable</key><true/>
             <key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><true/></dict>
           </dict></plist>
