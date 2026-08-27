@@ -75,6 +75,23 @@ func TestDecodeMediaAESKeyAcceptsWeixinFormats(t *testing.T) {
 	}
 }
 
+func TestDownloadMediaAcceptsDirectPlaintextImageURL(t *testing.T) {
+	want := []byte("plain image bytes")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(want)
+	}))
+	defer server.Close()
+
+	got, err := (&Client{}).DownloadMedia(context.Background(), Media{FullURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("direct image = %q, want %q", got, want)
+	}
+}
+
 func TestSendTextIncludesContextToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {

@@ -4,8 +4,8 @@ const (
 	Name            = "TinyChatGo"
 	ServerName      = "TinyChatGoServer"
 	ServerShortName = "TCGS"
-	Version         = "1.1.0"
-	Tag             = "v1.1.0"
+	Version         = "1.1.1"
+	Tag             = "v1.1.1"
 )
 
 // ClientServerURL is deliberately compiled into the desktop clients. Keep this

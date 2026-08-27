@@ -814,6 +814,13 @@ func (h *chatHub) publicUsersLocked(currentIP string) []ChatPublicUser {
 		online[peer.ip] = true
 		relevant[peer.ip] = true
 	}
+	// Registered users remain addressable while offline. Their durable direct
+	// history will be delivered in the ready frame when they reconnect.
+	for ip := range h.users {
+		if normalizeAccountID(ip) != "" {
+			relevant[ip] = true
+		}
+	}
 	relevant[currentIP] = true
 	for id := range h.direct {
 		first, second, ok := parseDirectConversationID(id)

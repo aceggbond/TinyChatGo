@@ -124,7 +124,7 @@ func New(logWriter io.Writer) *Server {
 		result.mu.RLock()
 		persistence := result.persistence
 		result.mu.RUnlock()
-		result.clawbot.forwardIncoming(accountID, message, persistence)
+		result.clawbot.forwardIncoming(accountID, message, persistence, !result.chat.accountOnline(accountID))
 	}
 	return result
 }
@@ -721,8 +721,8 @@ func (s *Server) serveClientDownload(w http.ResponseWriter, r *http.Request) {
 	filename := "TinyChatGo-Client-windows-amd64.exe"
 	contentType := "application/vnd.microsoft.portable-executable"
 	downloadPath := filepath.Join(filepath.Dir(executable), filename)
-	if platform == "macos-arm64" {
-		filename = "TinyChatGo-Client-macos-arm64.zip"
+	if platform == "macos-universal" {
+		filename = "TinyChatGo-Client-macos-universal.zip"
 		contentType = "application/zip"
 		downloadPath = filepath.Join(filepath.Dir(executable), filename)
 	}
@@ -761,7 +761,7 @@ func clientDownloadPlatform(r *http.Request) string {
 	if strings.Contains(platform, "mac") ||
 		strings.Contains(userAgent, "macintosh") ||
 		strings.Contains(userAgent, "mac os x") {
-		return "macos-arm64"
+		return "macos-universal"
 	}
 	return "windows-amd64"
 }

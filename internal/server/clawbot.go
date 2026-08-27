@@ -284,7 +284,12 @@ func (m *clawBotManager) monitor(ctx context.Context, accountID string) {
 						if media.AESKey == "" {
 							media.AESKey = item.Image.AESKey
 						}
-						m.cacheIncomingMedia(ctx, accountID, &message, media)
+						thumb := item.Image.ThumbMedia
+						if thumb.AESKey == "" {
+							thumb.AESKey = item.Image.AESKey
+						}
+						direct := clawbot.Media{FullURL: item.Image.URL}
+						m.cacheIncomingMedia(ctx, accountID, &message, media, thumb, direct)
 					}
 				case 4:
 					message.Kind, message.Text = "file", "[微信文件]"
@@ -308,15 +313,36 @@ func (m *clawBotManager) monitor(ctx context.Context, accountID string) {
 	}
 }
 
-func (m *clawBotManager) cacheIncomingMedia(ctx context.Context, accountID string, message *ClawBotMessage, media clawbot.Media) {
+func (m *clawBotManager) cacheIncomingMedia(ctx context.Context, accountID string, message *ClawBotMessage, candidates ...clawbot.Media) {
 	if message == nil || m.persistence == nil {
 		if message != nil {
 			message.Kind, message.Text = "text", message.Text+"（服务器未配置附件存储）"
 		}
 		return
 	}
-	data, err := m.client.DownloadMedia(ctx, media)
-	if err != nil {
+	var data []byte
+	var err error
+	for _, media := range candidates {
+		if strings.TrimSpace(media.FullURL) == "" && strings.TrimSpace(media.EncryptQueryParam) == "" {
+			continue
+		}
+		for attempt := 0; attempt < 3; attempt++ {
+			data, err = m.client.DownloadMedia(ctx, media)
+			if err == nil && len(data) != 0 {
+				break
+			}
+			if attempt < 2 {
+				time.Sleep(time.Duration(attempt+1) * 300 * time.Millisecond)
+			}
+		}
+		if err == nil && len(data) != 0 {
+			break
+		}
+	}
+	if err != nil || len(data) == 0 {
+		if err == nil {
+			err = errors.New("微信没有返回可用的图片地址")
+		}
 		message.Kind, message.Text = "text", message.Text+"（接收失败："+err.Error()+"）"
 		return
 	}
@@ -425,10 +451,10 @@ func (m *clawBotManager) sendMedia(accountID, fileName, mimeType string, data []
 	return nil
 }
 
-func (m *clawBotManager) forwardIncoming(accountID string, message ChatMessage, persistence Persistence) {
+func (m *clawBotManager) forwardIncoming(accountID string, message ChatMessage, persistence Persistence, recipientOffline bool) {
 	m.mu.RLock()
 	source := m.bindings[accountID]
-	if source == nil || source.Status != "bound" || !source.ForwardEnabled {
+	if source == nil || source.Status != "bound" || !source.ForwardEnabled && !recipientOffline {
 		m.mu.RUnlock()
 		return
 	}

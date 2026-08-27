@@ -839,6 +839,12 @@ func (h *chatHub) ipOnlineLocked(ip string) bool {
 	return false
 }
 
+func (h *chatHub) accountOnline(accountID string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.ipOnlineLocked(normalizeChatIdentity(accountID))
+}
+
 func (h *chatHub) peersForIPLocked(ip string) []*chatPeer {
 	peers := make([]*chatPeer, 0, 1)
 	for _, peer := range h.peers {
@@ -2438,9 +2444,9 @@ func (h *chatHub) receiveDirectMessage(peer *chatPeer, targetID string, message 
 		return errors.New("管理员尚未开启用户私信")
 	}
 	targetUser := h.users[targetID]
-	if targetUser == nil || targetUser.Blacklisted || !h.ipOnlineLocked(targetID) {
+	if targetUser == nil || targetUser.Blacklisted {
 		h.mu.Unlock()
-		return errors.New("私信用户已离线")
+		return errors.New("私信目标不存在或不可用")
 	}
 	sender := h.ensureUserLocked(peer.ip, peer.client)
 	if h.userListEnabled && strings.TrimSpace(sender.Name) == "" {
@@ -2484,9 +2490,9 @@ func (h *chatHub) receiveDirectMessage(peer *chatPeer, targetID string, message 
 	if h.forwardMessage != nil {
 		go h.forwardMessage(targetID, stored)
 	}
-	if delivered == 0 {
-		return errors.New("私信连接繁忙，请稍后重试")
-	}
+	// An offline recipient has no socket to enqueue to. The durable direct
+	// conversation is included in DirectHistory on their next connection.
+	// The sender's own socket normally accounts for one delivery here.
 	h.logIPOperation(peer.ip, "发送用户私信")
 	return nil
 }
@@ -2910,9 +2916,9 @@ func (h *chatHub) receiveHTTPAttachment(ip, targetID, name, mimeType, kind strin
 			return errors.New("私信功能不可用")
 		}
 		target := h.users[targetID]
-		if target == nil || target.Blacklisted || !h.ipOnlineLocked(targetID) {
+		if target == nil || target.Blacklisted {
 			h.mu.Unlock()
-			return errors.New("私信用户已离线")
+			return errors.New("私信目标不存在或不可用")
 		}
 		conversationID = directConversationID(ip, targetID)
 	} else if groupID != "" {
@@ -2942,7 +2948,10 @@ func (h *chatHub) receiveHTTPAttachment(ip, targetID, name, mimeType, kind strin
 	if adminTarget {
 		valid = valid && h.userListEnabled && h.privateEnabled
 	} else if targetID != "" {
-		valid = valid && h.userListEnabled && h.privateEnabled && h.ipOnlineLocked(targetID)
+		valid = valid && h.userListEnabled && h.privateEnabled
+		if target := h.users[targetID]; target == nil || target.Blacklisted {
+			valid = false
+		}
 	} else if conversationID == ChatGroupConversationID {
 		valid = valid && h.groupEnabled
 	} else if groupID != "" {

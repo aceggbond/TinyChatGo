@@ -58,23 +58,22 @@ jobs:
         with:
           go-version: "1.20"
 
-      - name: Verify macOS ARM64 packages
+      - name: Verify macOS client packages
         run: |
           go test ./... -run '^$'
           go test ./internal/database ./internal/discovery
+          go test -tags client ./internal/gui
 
-      - name: Build macOS ARM64 client app
-        env:
-          CGO_ENABLED: "1"
-          GOOS: darwin
-          GOARCH: arm64
-          CGO_CFLAGS: "-arch arm64"
-          CGO_CXXFLAGS: "-arch arm64"
-          CGO_LDFLAGS: "-arch arm64"
+      - name: Build universal macOS client app
         run: |
           APP="TinyChatGo-Client.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          go build -tags client -trimpath -buildvcs=false -ldflags "-s -w" -o "$APP/Contents/MacOS/TinyChatGo-Client" .
+          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CGO_CFLAGS="-arch arm64" CGO_CXXFLAGS="-arch arm64" CGO_LDFLAGS="-arch arm64" \
+            go build -tags client -trimpath -buildvcs=false -ldflags "-s -w" -o TinyChatGo-Client-arm64 .
+          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 CGO_CFLAGS="-arch x86_64" CGO_CXXFLAGS="-arch x86_64" CGO_LDFLAGS="-arch x86_64" \
+            go build -tags client -trimpath -buildvcs=false -ldflags "-s -w" -o TinyChatGo-Client-amd64 .
+          lipo -create TinyChatGo-Client-arm64 TinyChatGo-Client-amd64 -output "$APP/Contents/MacOS/TinyChatGo-Client"
+          lipo -verify_arch arm64 x86_64 "$APP/Contents/MacOS/TinyChatGo-Client"
           ICONSET="TinyChatGo.iconset"
           mkdir -p "$ICONSET"
           sips -z 16 16 logo.png --out "$ICONSET/icon_16x16.png"
@@ -97,21 +96,23 @@ jobs:
             <key>CFBundleIdentifier</key><string>com.aceggbond.TinyChatGo</string>
             <key>CFBundleName</key><string>TinyChatGo</string>
             <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>1.1.0</string>
-            <key>CFBundleVersion</key><string>1.1.0</string>
+            <key>CFBundleShortVersionString</key><string>1.1.1</string>
+            <key>CFBundleVersion</key><string>1.1.1</string>
             <key>CFBundleIconFile</key><string>TinyChatGo.icns</string>
             <key>LSMinimumSystemVersion</key><string>11.0</string>
             <key>NSHighResolutionCapable</key><true/>
+            <key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><true/></dict>
           </dict></plist>
           PLIST
           codesign --force --deep --sign - "$APP"
-          ditto -c -k --sequesterRsrc --keepParent "$APP" TinyChatGo-Client-macos-arm64.zip
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" TinyChatGo-Client-macos-universal.zip
 
       - name: Upload macOS release file
         uses: actions/upload-artifact@v7
         with:
           name: macos-release
-          path: TinyChatGo-Client-macos-arm64.zip
+          path: TinyChatGo-Client-macos-universal.zip
 
   android:
     runs-on: ubuntu-latest
@@ -170,7 +171,7 @@ jobs:
           files: |
             dist/TinyChatGoServer.exe
             dist/TinyChatGo-Client-windows-amd64.exe
-            dist/TinyChatGo-Client-macos-arm64.zip
+            dist/TinyChatGo-Client-macos-universal.zip
             dist/TinyChatGo-Client-android.apk
 
       - name: Verify GitHub Release assets
@@ -178,6 +179,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.assets[].name')"
-          for expected in TinyChatGoServer.exe TinyChatGo-Client-windows-amd64.exe TinyChatGo-Client-macos-arm64.zip TinyChatGo-Client-android.apk; do
+          for expected in TinyChatGoServer.exe TinyChatGo-Client-windows-amd64.exe TinyChatGo-Client-macos-universal.zip TinyChatGo-Client-android.apk; do
             grep -Fxq "${expected}" <<<"${assets}" || { echo "Missing release asset: ${expected}"; exit 1; }
           done

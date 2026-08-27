@@ -63,9 +63,11 @@ type TextItem struct {
 	Text string `json:"text,omitempty"`
 }
 type ImageItem struct {
-	Media   Media  `json:"media,omitempty"`
-	AESKey  string `json:"aeskey,omitempty"`
-	MidSize int64  `json:"mid_size,omitempty"`
+	Media      Media  `json:"media,omitempty"`
+	ThumbMedia Media  `json:"thumb_media,omitempty"`
+	AESKey     string `json:"aeskey,omitempty"`
+	URL        string `json:"url,omitempty"`
+	MidSize    int64  `json:"mid_size,omitempty"`
 }
 type FileItem struct {
 	Media    Media  `json:"media,omitempty"`
@@ -167,10 +169,6 @@ func (c *Client) DownloadMedia(ctx context.Context, media Media) ([]byte, error)
 	if target == "" {
 		return nil, errors.New("微信媒体缺少下载地址")
 	}
-	key, err := decodeMediaAESKey(media.AESKey)
-	if err != nil {
-		return nil, err
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err
@@ -184,6 +182,15 @@ func (c *Client) DownloadMedia(ctx context.Context, media Media) ([]byte, error)
 		return nil, fmt.Errorf("微信媒体下载失败 %d", resp.StatusCode)
 	}
 	ciphertext, err := io.ReadAll(io.LimitReader(resp.Body, 1<<30))
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(media.AESKey) == "" {
+		// Some inbound image variants contain a direct plaintext URL instead of
+		// a CDN encryption reference.
+		return ciphertext, nil
+	}
+	key, err := decodeMediaAESKey(media.AESKey)
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +347,7 @@ func (c *Client) request(ctx context.Context, method, baseURL, endpoint, token s
 }
 
 func baseInfo() map[string]string {
-	return map[string]string{"channel_version": channelVersion, "bot_agent": "TinyChatGo/1.1.0"}
+	return map[string]string{"channel_version": channelVersion, "bot_agent": "TinyChatGo/1.1.1"}
 }
 func randomHex(size int) string {
 	raw := make([]byte, size)

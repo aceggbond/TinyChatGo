@@ -192,7 +192,7 @@ func TestModernServerSettingsExposeClientDownloadToggle(t *testing.T) {
 		`id="allow-client-download"`,
 		`allowClientDownload:$('allow-client-download').checked`,
 		`$('allow-client-download').checked=!!s.allowClientDownload`,
-		"自动提供 Windows x64 或 macOS ARM64 客户端",
+		"自动提供 Windows x64 或 macOS 通用客户端",
 	} {
 		if !strings.Contains(html, marker) {
 			t.Fatalf("server client-download setting missing %q", marker)

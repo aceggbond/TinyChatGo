@@ -13,7 +13,7 @@ package gui
 #import <dispatch/dispatch.h>
 #include <stdlib.h>
 
-@interface LCGClientDelegate : NSObject <NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, UNUserNotificationCenterDelegate>
+@interface LCGClientDelegate : NSObject <NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, UNUserNotificationCenterDelegate>
 @property(nonatomic, weak) NSWindow *window;
 @end
 
@@ -52,9 +52,75 @@ static NSStatusItem *lcgStatusItem;
   NSString *page = [NSString stringWithFormat:
       @"<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width'>"
        @"<style>body{margin:0;display:grid;min-height:100vh;place-items:center;background:#f3f5f8;font-family:-apple-system,PingFang SC;color:#243047}.card{max-width:560px;margin:24px;padding:28px;border:1px solid #dfe5ee;border-radius:16px;background:white;box-shadow:0 16px 45px #1b31521a}h2{margin:0 0 10px}p{color:#718096;line-height:1.7}button{padding:10px 18px;border:0;border-radius:9px;background:#2f6fed;color:white;font-weight:700}</style>"
-       @"<div class='card'><h2>服务端连接失败</h2><p>%@</p><button onclick='location.reload()'>重新连接</button></div>",
+       @"<div class='card'><h2>服务端连接失败</h2><p>%@</p><button onclick='window.clientRetry().catch(function(e){alert(e.message||e)})'>重新连接</button></div>",
       escaped];
   [webView loadHTMLString:page baseURL:nil];
+}
+- (void)webView:(WKWebView *)webView
+    decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
+                    decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
+  if (navigationAction.targetFrame == nil && navigationAction.request.URL != nil) {
+    [webView loadRequest:navigationAction.request];
+    decisionHandler(WKNavigationActionPolicyCancel);
+    return;
+  }
+  decisionHandler(WKNavigationActionPolicyAllow);
+}
+- (void)webView:(WKWebView *)webView
+    decidePolicyForNavigationResponse:(WKNavigationResponse *)navigationResponse
+                      decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
+  (void)webView;
+  NSHTTPURLResponse *response = [navigationResponse.response isKindOfClass:[NSHTTPURLResponse class]]
+                                    ? (NSHTTPURLResponse *)navigationResponse.response
+                                    : nil;
+  NSString *disposition = [[response valueForHTTPHeaderField:@"Content-Disposition"] lowercaseString];
+  if (!navigationResponse.canShowMIMEType || [disposition containsString:@"attachment"]) {
+    decisionHandler(WKNavigationResponsePolicyDownload);
+    return;
+  }
+  decisionHandler(WKNavigationResponsePolicyAllow);
+}
+- (void)webView:(WKWebView *)webView
+    navigationResponse:(WKNavigationResponse *)navigationResponse
+       didBecomeDownload:(WKDownload *)download {
+  (void)webView;
+  (void)navigationResponse;
+  download.delegate = self;
+}
+- (void)download:(WKDownload *)download
+    decideDestinationUsingResponse:(NSURLResponse *)response
+                 suggestedFilename:(NSString *)suggestedFilename
+                  completionHandler:(void (^)(NSURL *destination))completionHandler {
+  (void)download;
+  NSString *downloads = [NSSearchPathForDirectoriesInDomains(NSDownloadsDirectory, NSUserDomainMask, YES) firstObject];
+  NSString *name = suggestedFilename.length ? suggestedFilename : (response.suggestedFilename.length ? response.suggestedFilename : @"TinyChatGo-下载");
+  name = [name lastPathComponent];
+  NSString *stem = name.stringByDeletingPathExtension;
+  NSString *extension = name.pathExtension;
+  NSString *path = [downloads stringByAppendingPathComponent:name];
+  NSInteger suffix = 1;
+  while ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+    NSString *candidate = extension.length
+        ? [NSString stringWithFormat:@"%@ (%ld).%@", stem, (long)suffix, extension]
+        : [NSString stringWithFormat:@"%@ (%ld)", stem, (long)suffix];
+    path = [downloads stringByAppendingPathComponent:candidate];
+    suffix++;
+  }
+  completionHandler([NSURL fileURLWithPath:path]);
+}
+- (void)downloadDidFinish:(WKDownload *)download {
+  (void)download;
+  [NSApp requestUserAttention:NSInformationalRequest];
+}
+- (void)download:(WKDownload *)download didFailWithError:(NSError *)error resumeData:(NSData *)resumeData {
+  (void)download;
+  (void)resumeData;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @"文件下载失败";
+    alert.informativeText = error.localizedDescription ?: @"未知错误";
+    [alert runModal];
+  });
 }
 - (void)webView:(WKWebView *)webView
     didFailProvisionalNavigation:(WKNavigation *)navigation
@@ -251,6 +317,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -295,6 +362,14 @@ func RunClient(logo []byte) error {
 	if err = os.MkdirAll(configDir, 0700); err != nil {
 		return fmt.Errorf("无法创建客户端配置目录：%w", err)
 	}
+	instanceLock, err := acquireDarwinClientInstanceLock(filepath.Join(configDir, "client.lock"))
+	if err != nil {
+		return err
+	}
+	if instanceLock == nil {
+		return nil
+	}
+	defer releaseDarwinClientInstanceLock(instanceLock)
 	configPath := filepath.Join(configDir, "client.json")
 	settings := loadDarwinClientSettings(configPath)
 	settings.ServerURL, err = normalizeDarwinClientURL(appinfo.ClientServerURL)
@@ -348,6 +423,29 @@ func RunClient(logo []byte) error {
 	}()
 	view.Run()
 	return nil
+}
+
+func acquireDarwinClientInstanceLock(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("创建客户端单实例锁失败：%w", err)
+	}
+	if err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("锁定客户端实例失败：%w", err)
+	}
+	return file, nil
+}
+
+func releaseDarwinClientInstanceLock(file *os.File) {
+	if file == nil {
+		return
+	}
+	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	_ = file.Close()
 }
 
 func loadDarwinClientSettings(path string) darwinClientSettings {
