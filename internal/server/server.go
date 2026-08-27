@@ -721,8 +721,8 @@ func (s *Server) serveClientDownload(w http.ResponseWriter, r *http.Request) {
 	filename := "TinyChatGo-Client-windows-amd64.exe"
 	contentType := "application/vnd.microsoft.portable-executable"
 	downloadPath := filepath.Join(filepath.Dir(executable), filename)
-	if platform == "macos-universal" {
-		filename = "TinyChatGo-Client-macos-universal.zip"
+	if platform == "macos-arm64" {
+		filename = "TinyChatGo-Client-macos-arm64.zip"
 		contentType = "application/zip"
 		downloadPath = filepath.Join(filepath.Dir(executable), filename)
 	}
@@ -761,7 +761,7 @@ func clientDownloadPlatform(r *http.Request) string {
 	if strings.Contains(platform, "mac") ||
 		strings.Contains(userAgent, "macintosh") ||
 		strings.Contains(userAgent, "mac os x") {
-		return "macos-universal"
+		return "macos-arm64"
 	}
 	return "windows-amd64"
 }

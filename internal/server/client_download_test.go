@@ -49,7 +49,7 @@ func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
 		`notifyButton.hidden=true`,
 		`$('native-settings').hidden=!nativeClient`,
 		`clientPlatform.indexOf('mac')`,
-		`'下载 macOS 通用客户端':'下载 Windows 客户端'`,
+		`'下载 macOS ARM64 客户端':'下载 Windows 客户端'`,
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("automatic client platform UI missing %q", marker)
@@ -67,15 +67,15 @@ func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
 	}
 }
 
-func TestClientDownloadDetectsMacOSAndUsesUniversalRelease(t *testing.T) {
+func TestClientDownloadDetectsMacOSAndUsesArm64Release(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		platform string
 		ua       string
 		want     string
 	}{
-		{name: "client hint", platform: `"macOS"`, want: "macos-universal"},
-		{name: "user agent", ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)", want: "macos-universal"},
+		{name: "client hint", platform: `"macOS"`, want: "macos-arm64"},
+		{name: "user agent", ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)", want: "macos-arm64"},
 		{name: "android user agent", ua: "Mozilla/5.0 (Linux; Android 14)", want: "android"},
 		{name: "windows", platform: `"Windows"`, ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", want: "windows-amd64"},
 	} {
@@ -98,7 +98,7 @@ func TestClientDownloadDetectsMacOSAndUsesUniversalRelease(t *testing.T) {
 	if recorder.Code != http.StatusTemporaryRedirect {
 		t.Fatalf("macOS download status = %d", recorder.Code)
 	}
-	want := "https://github.com/aceggbond/TinyChatGo/releases/download/" + appinfo.Tag + "/TinyChatGo-Client-macos-universal.zip"
+	want := "https://github.com/aceggbond/TinyChatGo/releases/download/" + appinfo.Tag + "/TinyChatGo-Client-macos-arm64.zip"
 	if got := recorder.Header().Get("Location"); got != want {
 		t.Fatalf("macOS redirect = %q, want %q", got, want)
 	}

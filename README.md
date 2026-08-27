@@ -4,7 +4,7 @@
 
 TinyChatGo 是轻量、安全的互联网聊天与文件分享系统。`TinyChatGoServer`（简称 **TCGS**）负责账号、权限、群聊和历史归档管理；用户登录后可通过浏览器、Windows、macOS 或 Android 客户端使用。
 
-[下载 TinyChatGo v1.1.3](https://github.com/aceggbond/TinyChatGo/releases/tag/v1.1.3) · [Releases](https://github.com/aceggbond/TinyChatGo/releases) · [项目主页](https://github.com/aceggbond/TinyChatGo)
+[下载 TinyChatGo v1.1.4](https://github.com/aceggbond/TinyChatGo/releases/tag/v1.1.4) · [Releases](https://github.com/aceggbond/TinyChatGo/releases) · [项目主页](https://github.com/aceggbond/TinyChatGo)
 
 ## 主要功能
 
@@ -18,7 +18,7 @@ TinyChatGo 是轻量、安全的互联网聊天与文件分享系统。`TinyChat
 - 图片支持放大、前后切换、滚轮缩放和 `Esc` 退出；聊天文本、图片和文件均支持右键复制。
 - 文件和图片自动归档、搜索和分页；附件使用 SHA-256 去重，相同内容只保存一份。
 - Windows 客户端支持开机启动、托盘驻留、声音、任务栏及托盘闪烁、带发送人头像的通知。
-- macOS 通用客户端支持 Intel 与 Apple Silicon、菜单栏驻留、系统通知、自签名 HTTPS、原生文件选择和系统下载。
+- macOS ARM64 客户端支持 Apple Silicon、菜单栏驻留、系统通知、自签名 HTTPS、原生文件选择和系统下载。
 - Android 客户端内置固定服务地址，首次输入的首层访问密码由 Android Keystore 加密保存；采用微信式“消息、通讯录、我的”底部导航，支持全屏聊天、文件选择、带登录 Cookie 的系统下载，以及前后台连接交接、断线恢复、开机启动的常驻消息通知服务。
 - 支持 HTTP/HTTPS、自动生成证书、HTTP 跳转 HTTPS，以及可信代理、X-Forwarded-For 和 PROXY Protocol v1/v2。
 - 配置、账号、会话、聊天记录、归档索引和证书统一保存在 `tinychatgo.db`。
@@ -63,7 +63,7 @@ go build -tags client -trimpath -buildvcs=false -ldflags "-H=windowsgui -s -w" -
 
 - `TinyChatGoServer.exe`
 - `TinyChatGo-Client-windows-amd64.exe`
-- `TinyChatGo-Client-macos-universal.zip`
+- `TinyChatGo-Client-macos-arm64.zip`
 
 ## 项目地址
 
