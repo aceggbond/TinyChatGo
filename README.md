@@ -44,7 +44,10 @@ TinyChatGo 是轻量、安全的互联网聊天与文件分享系统。`TinyChat
 
 ## 数据与部署
 
-- `tinychatgo.db` 不存在时会自动创建；聊天附件保存在 `chat_files/`。
+- `tinychatgo.db` 是标准 SQLite 数据库，不存在时会自动创建；聊天附件保存在 `chat_files/`。
+- 本版采用全新的 SQLite 业务表结构，不导入旧数据库。升级前请备份并移走旧 `tinychatgo.db`，首次启动会创建全新数据库。
+- 聊天附件按 `chat_files/年/月/日/SHA256.原扩展名` 保存，例如 `chat_files/2026/08/28/哈希值.png`。
+- HTTPS CA、证书和私钥全部保存在 SQLite 的 `certificates` 表，并记录证书对应 IP、DNS、序列号及有效期。
 - 互联网部署应启用 HTTPS，并设置足够强的 Web 访问密码与账号密码。
 - 经过 FRP 或反向代理时，在服务端填写可信代理 IP/CIDR；HTTP 代理可传递 `X-Forwarded-For`，TCP 映射可启用 PROXY Protocol v1/v2。
 - `internal/appinfo/appinfo.go` 中的 `ClientServerURL` 和 `ClientAccessPassword` 会编译进桌面客户端。

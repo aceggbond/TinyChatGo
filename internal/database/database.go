@@ -18,8 +18,6 @@ import (
 	"sync"
 	"time"
 
-	bolt "go.etcd.io/bbolt"
-
 	"tinychatgo/internal/server"
 )
 
@@ -45,7 +43,7 @@ const loadedMessagesPerConversation = 100
 
 // DB owns the application's single durable database and chat attachment tree.
 type DB struct {
-	db             *bolt.DB
+	db             *kvDB
 	path           string
 	attachmentRoot string
 	attachmentMu   sync.Mutex
@@ -76,7 +74,7 @@ func Open(path string) (*DB, error) {
 	if err = os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
 	}
-	raw, err := bolt.Open(absolute, 0600, &bolt.Options{Timeout: 2 * time.Second})
+	raw, err := openSQLiteKV(absolute)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -85,7 +83,7 @@ func Open(path string) (*DB, error) {
 		path:           absolute,
 		attachmentRoot: filepath.Join(filepath.Dir(absolute), "chat_files"),
 	}
-	if err = raw.Update(func(tx *bolt.Tx) error {
+	if err = raw.Update(func(tx *kvTx) error {
 		for _, name := range [][]byte{bucketApp, bucketUsers, bucketRemarks, bucketMessages, bucketAttachments, bucketAttachmentHashes, bucketAccess, bucketAccounts, bucketSessions, bucketClawBot} {
 			if _, createErr := tx.CreateBucketIfNotExists(name); createErr != nil {
 				return createErr
@@ -105,7 +103,7 @@ func Open(path string) (*DB, error) {
 
 func (d *DB) LoadClawBotBindings() ([]server.ClawBotBinding, error) {
 	result := make([]server.ClawBotBinding, 0)
-	err := d.db.View(func(tx *bolt.Tx) error {
+	err := d.db.View(func(tx *kvTx) error {
 		return tx.Bucket(bucketClawBot).ForEach(func(_, value []byte) error {
 			var binding server.ClawBotBinding
 			if err := json.Unmarshal(value, &binding); err != nil {
@@ -127,13 +125,13 @@ func (d *DB) SaveClawBotBinding(binding server.ClawBotBinding) error {
 	if err != nil {
 		return err
 	}
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		return tx.Bucket(bucketClawBot).Put([]byte(binding.AccountID), encoded)
 	})
 }
 
 func (d *DB) DeleteClawBotBinding(accountID string) error {
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		return tx.Bucket(bucketClawBot).Delete([]byte(strings.TrimSpace(accountID)))
 	})
 }
@@ -157,7 +155,7 @@ func (d *DB) SaveSettings(value any) error {
 
 func (d *DB) LoadAccounts() ([]server.Account, error) {
 	items := make([]server.Account, 0)
-	err := d.db.View(func(tx *bolt.Tx) error {
+	err := d.db.View(func(tx *kvTx) error {
 		return tx.Bucket(bucketAccounts).ForEach(func(_, value []byte) error {
 			var item server.Account
 			if err := json.Unmarshal(value, &item); err != nil {
@@ -176,13 +174,13 @@ func (d *DB) SaveAccount(account server.Account) error {
 	if err != nil {
 		return err
 	}
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		return tx.Bucket(bucketAccounts).Put([]byte(account.ID), raw)
 	})
 }
 
 func (d *DB) DeleteAccount(id string) error {
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		if err := tx.Bucket(bucketAccounts).Delete([]byte(id)); err != nil {
 			return err
 		}
@@ -208,7 +206,7 @@ func (d *DB) DeleteAccount(id string) error {
 
 func (d *DB) LoadAccountSessions() ([]server.AccountSession, error) {
 	items := make([]server.AccountSession, 0)
-	err := d.db.View(func(tx *bolt.Tx) error {
+	err := d.db.View(func(tx *kvTx) error {
 		return tx.Bucket(bucketSessions).ForEach(func(_, value []byte) error {
 			var item server.AccountSession
 			if err := json.Unmarshal(value, &item); err != nil {
@@ -226,19 +224,19 @@ func (d *DB) SaveAccountSession(session server.AccountSession) error {
 	if err != nil {
 		return err
 	}
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		return tx.Bucket(bucketSessions).Put([]byte(session.TokenHash), raw)
 	})
 }
 
 func (d *DB) DeleteAccountSession(tokenHash string) error {
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		return tx.Bucket(bucketSessions).Delete([]byte(tokenHash))
 	})
 }
 
 func (d *DB) DeleteAccountSessions(accountID string) error {
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		bucket := tx.Bucket(bucketSessions)
 		var remove [][]byte
 		if err := bucket.ForEach(func(key, value []byte) error {
@@ -328,7 +326,7 @@ func (d *DB) DeleteChatGroup(id string) error {
 
 func (d *DB) loadAppJSON(key []byte, value any) (bool, error) {
 	found := false
-	err := d.db.View(func(tx *bolt.Tx) error {
+	err := d.db.View(func(tx *kvTx) error {
 		raw := tx.Bucket(bucketApp).Get(key)
 		if raw == nil {
 			return nil
@@ -344,7 +342,7 @@ func (d *DB) saveAppJSON(key []byte, value any) error {
 	if err != nil {
 		return err
 	}
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		return tx.Bucket(bucketApp).Put(key, raw)
 	})
 }
@@ -352,7 +350,7 @@ func (d *DB) saveAppJSON(key []byte, value any) error {
 func (d *DB) LoadChatState() ([]server.ChatUser, []server.StoredChatMessage, error) {
 	users := make([]server.ChatUser, 0)
 	byConversation := make(map[string][]server.StoredChatMessage)
-	err := d.db.View(func(tx *bolt.Tx) error {
+	err := d.db.View(func(tx *kvTx) error {
 		if err := tx.Bucket(bucketUsers).ForEach(func(_, value []byte) error {
 			var user server.ChatUser
 			if err := json.Unmarshal(value, &user); err != nil {
@@ -398,14 +396,14 @@ func (d *DB) SaveChatUser(user server.ChatUser) error {
 	if err != nil {
 		return err
 	}
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		return tx.Bucket(bucketUsers).Put([]byte(user.IP), raw)
 	})
 }
 
 func (d *DB) LoadChatRemarks() ([]server.ChatRemark, error) {
 	remarks := make([]server.ChatRemark, 0)
-	err := d.db.View(func(tx *bolt.Tx) error {
+	err := d.db.View(func(tx *kvTx) error {
 		return tx.Bucket(bucketRemarks).ForEach(func(_, value []byte) error {
 			var remark server.ChatRemark
 			if err := json.Unmarshal(value, &remark); err != nil {
@@ -427,13 +425,13 @@ func (d *DB) SaveChatRemark(remark server.ChatRemark) error {
 	if err != nil {
 		return err
 	}
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		return tx.Bucket(bucketRemarks).Put(remarkKey(remark.OwnerIP, remark.TargetIP), raw)
 	})
 }
 
 func (d *DB) DeleteChatRemark(ownerIP, targetIP string) error {
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		return tx.Bucket(bucketRemarks).Delete(remarkKey(ownerIP, targetIP))
 	})
 }
@@ -443,7 +441,7 @@ func (d *DB) ClearChatRemarks() error {
 }
 
 func (d *DB) DeleteChatUser(ip string) error {
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		return tx.Bucket(bucketUsers).Delete([]byte(ip))
 	})
 }
@@ -516,7 +514,7 @@ func (d *DB) saveStoredChatMessage(conversationID string, stored server.ChatMess
 		return stored, err
 	}
 	key := messageKey(conversationID, stored)
-	err = d.db.Update(func(tx *bolt.Tx) error {
+	err = d.db.Update(func(tx *kvTx) error {
 		if err := tx.Bucket(bucketMessages).Put(key, raw); err != nil {
 			return err
 		}
@@ -551,7 +549,7 @@ func (d *DB) saveStoredChatMessage(conversationID string, stored server.ChatMess
 	return stored, nil
 }
 
-func releaseAttachmentReference(tx *bolt.Tx, message server.ChatMessage) (string, error) {
+func releaseAttachmentReference(tx *kvTx, message server.ChatMessage) (string, error) {
 	if message.AttachmentPath == "" {
 		return "", nil
 	}
@@ -600,7 +598,7 @@ func (d *DB) DeleteChatMessage(messageID string) error {
 	d.attachmentMu.Lock()
 	defer d.attachmentMu.Unlock()
 	var attachmentPath string
-	err := d.db.Update(func(tx *bolt.Tx) error {
+	err := d.db.Update(func(tx *kvTx) error {
 		attachments := tx.Bucket(bucketAttachments)
 		if raw := attachments.Get([]byte(messageID)); raw != nil {
 			var item server.StoredChatMessage
@@ -645,7 +643,7 @@ func (d *DB) RecallChatMessage(messageID string, recalledAt time.Time) (server.S
 	defer d.attachmentMu.Unlock()
 	var recalled server.StoredChatMessage
 	var attachmentPath string
-	err := d.db.Update(func(tx *bolt.Tx) error {
+	err := d.db.Update(func(tx *kvTx) error {
 		messages := tx.Bucket(bucketMessages)
 		var foundKey []byte
 		cursor := messages.Cursor()
@@ -715,7 +713,7 @@ func (d *DB) MarkChatMessagesRead(messageIDs []string, readAt time.Time) error {
 		attachment bool
 		raw        []byte
 	}
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		messages := tx.Bucket(bucketMessages)
 		updates := make([]update, 0, len(ids))
 		cursor := messages.Cursor()
@@ -760,7 +758,7 @@ func (d *DB) DeleteChatConversation(conversationID string) error {
 	d.attachmentMu.Lock()
 	defer d.attachmentMu.Unlock()
 	paths := make([]string, 0)
-	err := d.db.Update(func(tx *bolt.Tx) error {
+	err := d.db.Update(func(tx *kvTx) error {
 		bucket := tx.Bucket(bucketMessages)
 		cursor := bucket.Cursor()
 		prefix := []byte(conversationID + "\x00")
@@ -818,7 +816,7 @@ func (d *DB) ClearChatMessages() error {
 
 func (d *DB) OpenChatAttachment(messageID string) (server.ChatAttachment, error) {
 	var found server.StoredChatMessage
-	err := d.db.View(func(tx *bolt.Tx) error {
+	err := d.db.View(func(tx *kvTx) error {
 		if raw := tx.Bucket(bucketAttachments).Get([]byte(messageID)); raw != nil {
 			return json.Unmarshal(raw, &found)
 		}
@@ -882,7 +880,7 @@ func (d *DB) ListChatAttachments(query server.ChatArchiveQuery) (server.ChatArch
 	kind := strings.ToLower(strings.TrimSpace(query.Kind))
 	conversationID := strings.TrimSpace(query.ConversationID)
 	items := make([]server.ChatArchiveItem, 0)
-	err := d.db.View(func(tx *bolt.Tx) error {
+	err := d.db.View(func(tx *kvTx) error {
 		return tx.Bucket(bucketAttachments).ForEach(func(_, value []byte) error {
 			var stored server.StoredChatMessage
 			if err := json.Unmarshal(value, &stored); err != nil {
@@ -985,7 +983,7 @@ func (d *DB) ListChatMessages(query server.ChatHistoryQuery) (server.ChatHistory
 	needle := strings.ToLower(strings.TrimSpace(query.Query))
 	conversationID := strings.TrimSpace(query.ConversationID)
 	items := make([]server.ChatHistoryItem, 0)
-	err := d.db.View(func(tx *bolt.Tx) error {
+	err := d.db.View(func(tx *kvTx) error {
 		return tx.Bucket(bucketMessages).ForEach(func(_, value []byte) error {
 			var stored server.StoredChatMessage
 			if err := json.Unmarshal(value, &stored); err != nil {
@@ -1086,7 +1084,7 @@ func chatConversationVisible(conversationID, viewerIP string, groupMembers map[s
 // ChatAttachmentPath resolves one attachment for trusted desktop-only actions.
 func (d *DB) ChatAttachmentPath(messageID string) (string, error) {
 	var relative string
-	err := d.db.View(func(tx *bolt.Tx) error {
+	err := d.db.View(func(tx *kvTx) error {
 		if raw := tx.Bucket(bucketAttachments).Get([]byte(messageID)); raw != nil {
 			var item server.StoredChatMessage
 			if err := json.Unmarshal(raw, &item); err != nil {
@@ -1121,7 +1119,7 @@ func (d *DB) SaveAccessRecord(record server.AccessRecord) error {
 	if err != nil {
 		return err
 	}
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		bucket := tx.Bucket(bucketAccess)
 		sequence, err := bucket.NextSequence()
 		if err != nil {
@@ -1143,7 +1141,7 @@ func (d *DB) ListAccessRecords(limit int) ([]server.AccessRecord, error) {
 		limit = 1000
 	}
 	records := make([]server.AccessRecord, 0, limit)
-	err := d.db.View(func(tx *bolt.Tx) error {
+	err := d.db.View(func(tx *kvTx) error {
 		cursor := tx.Bucket(bucketAccess).Cursor()
 		for key, value := cursor.Last(); key != nil && len(records) < limit; key, value = cursor.Prev() {
 			var record server.AccessRecord
@@ -1165,8 +1163,8 @@ func (d *DB) ClearAccessRecords() error {
 }
 
 func (d *DB) recreateBucket(name []byte) error {
-	return d.db.Update(func(tx *bolt.Tx) error {
-		if err := tx.DeleteBucket(name); err != nil && !errors.Is(err, bolt.ErrBucketNotFound) {
+	return d.db.Update(func(tx *kvTx) error {
+		if err := tx.DeleteBucket(name); err != nil && !errors.Is(err, errBucketNotFound) {
 			return err
 		}
 		_, err := tx.CreateBucket(name)
@@ -1200,7 +1198,7 @@ func (d *DB) writeAttachmentStream(message server.ChatMessage, reader io.Reader,
 	contentHash := hex.EncodeToString(hasher.Sum(nil))
 
 	var indexed attachmentHashRecord
-	_ = d.db.View(func(tx *bolt.Tx) error {
+	_ = d.db.View(func(tx *kvTx) error {
 		if raw := tx.Bucket(bucketAttachmentHashes).Get([]byte(contentHash)); raw != nil {
 			_ = json.Unmarshal(raw, &indexed)
 		}
@@ -1224,7 +1222,8 @@ func (d *DB) writeAttachmentStream(message server.ChatMessage, reader io.Reader,
 	if at.IsZero() {
 		at = time.Now().UTC()
 	}
-	relative := filepath.Join(at.Local().Format("2006-01-02"), contentHash)
+	extension := attachmentExtension(message.FileName, message.Mime)
+	relative := filepath.Join(at.Local().Format("2006"), at.Local().Format("01"), at.Local().Format("02"), contentHash+extension)
 	absolute, err := d.resolveAttachment(relative)
 	if err != nil {
 		return "", 0, "", false, err
@@ -1304,7 +1303,7 @@ func remarkKey(ownerIP, targetIP string) []byte {
 // MigrationDone records one-time imports without exposing another sidecar.
 func (d *DB) MigrationDone(name string) (bool, error) {
 	var done bool
-	err := d.db.View(func(tx *bolt.Tx) error {
+	err := d.db.View(func(tx *kvTx) error {
 		done = string(tx.Bucket(bucketApp).Get([]byte("migration:"+name))) == "1"
 		return nil
 	})
@@ -1312,7 +1311,7 @@ func (d *DB) MigrationDone(name string) (bool, error) {
 }
 
 func (d *DB) MarkMigrationDone(name string) error {
-	return d.db.Update(func(tx *bolt.Tx) error {
+	return d.db.Update(func(tx *kvTx) error {
 		return tx.Bucket(bucketApp).Put([]byte("migration:"+name), []byte(strconv.Itoa(1)))
 	})
 }

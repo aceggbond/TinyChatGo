@@ -43,6 +43,13 @@ func TestDatabasePersistsApplicationAndChatData(t *testing.T) {
 	if err != nil || !found || string(restoredCertificate.KeyPEM) != "key" {
 		t.Fatalf("restored certificate = %#v, found %v, error %v", restoredCertificate, found, err)
 	}
+	var storedCACert, storedServerKey []byte
+	if err = store.db.sql.QueryRow("SELECT ca_certificate_pem,server_private_key_pem FROM certificates WHERE id='server'").Scan(&storedCACert, &storedServerKey); err != nil {
+		t.Fatalf("certificate business row: %v", err)
+	}
+	if string(storedCACert) != "ca" || string(storedServerKey) != "key" {
+		t.Fatalf("certificate business row contains unexpected data")
+	}
 
 	shares := []map[string]any{{"name": "example", "path": `C:\example`}}
 	if err = store.SaveShares(shares); err != nil {
@@ -107,9 +114,12 @@ func TestDatabasePersistsApplicationAndChatData(t *testing.T) {
 	if _, err = store.SaveChatAttachment("admin:"+user.IP, rejected, strings.NewReader("12345"), 4); err == nil {
 		t.Fatal("oversized streamed attachment was accepted")
 	}
-	wantDateDirectory := filepath.Join(root, "chat_files", now.Local().Format("2006-01-02"))
+	wantDateDirectory := filepath.Join(root, "chat_files", now.Local().Format("2006"), now.Local().Format("01"), now.Local().Format("02"))
 	if _, err = os.Stat(wantDateDirectory); err != nil {
 		t.Fatalf("dated chat_files directory missing: %v", err)
+	}
+	if filepath.Ext(storedImage.AttachmentPath) != ".png" || filepath.Ext(storedFile.AttachmentPath) != ".bin" {
+		t.Fatalf("attachment suffixes were not preserved: image=%q file=%q", storedImage.AttachmentPath, storedFile.AttachmentPath)
 	}
 
 	users, messages, err := store.LoadChatState()

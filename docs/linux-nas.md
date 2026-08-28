@@ -7,8 +7,13 @@ Linux 构建产物是无界面的服务进程，网页端功能、账号、聊�
 先修改 `docker-compose.yml` 中的访问密码，然后运行：
 
 ```sh
+printf 'PUID=%s\nPGID=%s\n' "$(id -u)" "$(id -g)" > .env
+mkdir -p tinychatgo-data
+chown -R "$(id -u):$(id -g)" tinychatgo-data
 docker compose up -d --build
 ```
+
+Compose 会使用 `.env` 中的 PUID/PGID 运行服务，使容器能够写入 NAS 上映射的 `tinychatgo-data`。如果当前账号不能修改目录所有者，请在 `chown` 和 Docker 命令前加 `sudo`。
 
 浏览器访问 `http://NAS-IP:8080`。数据保存在当前目录的 `tinychatgo-data/`，升级容器不会丢失。
 
@@ -47,3 +52,20 @@ HTTPS 通常建议交给 NAS 自带的反向代理处理。如果要由程序直
 ```
 
 反向代理需要转发 WebSocket，并设置 `X-Forwarded-For`；同时用 `TINYCHATGO_TRUSTED_PROXIES` 明确配置代理地址。
+
+## SQLite 数据库
+
+- 服务端现在使用标准 SQLite 数据库，文件仍为 `tinychatgo-data/tinychatgo.db`，可以用 DBX、DB Browser for SQLite 等工具查看。
+- 本版使用全新的 SQLite 业务表结构，不迁移旧数据。升级前先停止容器，备份并移走旧 `tinychatgo.db`，再启动新版创建空数据库。
+- 数据库包含可直接查看的 `users`、`chat_messages`、`files`、`clawbot_bindings` 和 `certificates` 表。用户表保存用户名、Argon2id 密码哈希、Base64 头像和 ClawBot 状态；敏感字段不要公开。
+- 自动生成的 CA、CA 私钥、服务器证书和服务器私钥全部保存在 `certificates` 表；`ip` 字段来自证书 IP SAN，另有 DNS、序列号、有效期和更新时间字段。
+- 聊天文件按 `chat_files/年/月/日/SHA256.原扩展名` 保存，原始文件名、MIME、大小、哈希和磁盘路径记录在 `files` 表中。
+- SQLite 使用 WAL 日志。复制数据库做离线查看或备份前，建议先执行 `docker compose stop`；直接删除 `tinychatgo.db-wal` 或 `tinychatgo.db-shm` 可能造成最新数据丢失。
+
+查看容器内数据库类型：
+
+```sh
+sudo docker compose exec tinychatgo sh -c 'head -c 16 /data/tinychatgo.db'
+```
+
+正常会显示 `SQLite format 3`。
