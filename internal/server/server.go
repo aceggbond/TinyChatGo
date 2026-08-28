@@ -708,45 +708,19 @@ func (s *Server) serveClientDownload(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	platform := clientDownloadPlatform(r)
-	if platform == "android" {
-		http.Redirect(w, r, "https://github.com/aceggbond/TinyChatGo/releases/download/"+appinfo.Tag+"/TinyChatGo-Client-android.apk", http.StatusTemporaryRedirect)
-		return
-	}
-	executable, err := os.Executable()
-	if err != nil {
-		http.Error(w, "client executable unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	filename := "TinyChatGo-Client-windows-amd64.exe"
-	contentType := "application/vnd.microsoft.portable-executable"
-	downloadPath := filepath.Join(filepath.Dir(executable), filename)
-	if platform == "macos-arm64" {
-		filename = "TinyChatGo-Client-macos-arm64.zip"
-		contentType = "application/zip"
-		downloadPath = filepath.Join(filepath.Dir(executable), filename)
-	}
-	if info, statErr := os.Stat(downloadPath); statErr != nil || !info.Mode().IsRegular() {
-		releaseURL := "https://github.com/aceggbond/TinyChatGo/releases/download/" + appinfo.Tag + "/" + filename
-		http.Redirect(w, r, releaseURL, http.StatusTemporaryRedirect)
-		return
-	}
-	file, err := os.Open(downloadPath)
-	if err != nil {
-		http.Error(w, "client executable unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		http.Error(w, "client executable unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	http.ServeContent(w, r, filename, info.ModTime(), file)
+	http.Redirect(w, r, clientReleaseURL(clientDownloadPlatform(r)), http.StatusTemporaryRedirect)
+}
+
+func clientReleaseURL(platform string) string {
+	filename := "TinyChatGo-Client-windows-amd64.exe"
+	switch platform {
+	case "android":
+		filename = "TinyChatGo-Client-android.apk"
+	case "macos-arm64":
+		filename = "TinyChatGo-Client-macos-arm64.zip"
+	}
+	return "https://github.com/aceggbond/TinyChatGo/releases/download/" + appinfo.Tag + "/" + filename
 }
 
 func clientDownloadPlatform(r *http.Request) string {

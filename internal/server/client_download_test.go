@@ -49,6 +49,7 @@ func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
 		`notifyButton.hidden=true`,
 		`$('native-settings').hidden=!nativeClient`,
 		`clientPlatform.indexOf('mac')`,
+		"https://github.com/aceggbond/TinyChatGo/releases/download/v" + appinfo.Version + "/",
 		`'下载 macOS ARM64 客户端':'下载 Windows 客户端'`,
 	} {
 		if !strings.Contains(body, marker) {
@@ -64,6 +65,19 @@ func TestClientDownloadToggleControlsPortalAndExecutable(t *testing.T) {
 	wantDownload := "https://github.com/aceggbond/TinyChatGo/releases/download/" + appinfo.Tag + "/TinyChatGo-Client-windows-amd64.exe"
 	if got := downloadRecorder.Header().Get("Location"); got != wantDownload {
 		t.Fatalf("Windows client redirect = %q, want %q", got, wantDownload)
+	}
+}
+
+func TestClientReleaseURLAlwaysUsesGitHubRelease(t *testing.T) {
+	for platform, filename := range map[string]string{
+		"windows-amd64": "TinyChatGo-Client-windows-amd64.exe",
+		"macos-arm64":   "TinyChatGo-Client-macos-arm64.zip",
+		"android":       "TinyChatGo-Client-android.apk",
+	} {
+		want := "https://github.com/aceggbond/TinyChatGo/releases/download/" + appinfo.Tag + "/" + filename
+		if got := clientReleaseURL(platform); got != want {
+			t.Fatalf("clientReleaseURL(%q) = %q, want %q", platform, got, want)
+		}
 	}
 }
 

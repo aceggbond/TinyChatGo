@@ -311,13 +311,11 @@ func (m *clawBotManager) monitor(ctx context.Context, accountID string) {
 	}
 }
 
-// updateClawBotReplyRoute learns the actual Weixin peer from delivered
-// messages. A small number of accounts receive a provisional ilink_user_id at
-// QR binding time; sendmessage may return ret=0 for that stale ID while Weixin
-// silently delivers nothing. The sender and context token from getupdates are
-// the authoritative route for replies and must be persisted together.
+// updateClawBotReplyRoute learns the actual Weixin peer from real inbound chat
+// messages only. getupdates also returns system events and outbound receipts;
+// their routing fields must never replace the user's reply route.
 func updateClawBotReplyRoute(binding *ClawBotBinding, incoming clawbot.Message) {
-	if binding == nil {
+	if binding == nil || incoming.MessageType != 1 {
 		return
 	}
 	if peer := strings.TrimSpace(incoming.FromUserID); peer != "" && peer != binding.BotID {
