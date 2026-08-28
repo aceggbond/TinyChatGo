@@ -6,18 +6,18 @@ import (
 	"tinychatgo/internal/clawbot"
 )
 
-func TestUpdateClawBotReplyRouteUsesIncomingWeixinPeer(t *testing.T) {
+func TestUpdateClawBotReplyContextKeepsQRConfirmedWeixinPeer(t *testing.T) {
 	binding := &ClawBotBinding{
 		BotID:        "bot-id",
 		WeixinUserID: "provisional-user-id",
 		ContextToken: "old-context",
 	}
-	updateClawBotReplyRoute(binding, clawbot.Message{
+	updateClawBotReplyContext(binding, clawbot.Message{
 		MessageType:  1,
 		FromUserID:   "actual-weixin-user",
 		ContextToken: "fresh-context",
 	})
-	if binding.WeixinUserID != "actual-weixin-user" {
+	if binding.WeixinUserID != "provisional-user-id" {
 		t.Fatalf("reply peer = %q", binding.WeixinUserID)
 	}
 	if binding.ContextToken != "fresh-context" {
@@ -25,9 +25,9 @@ func TestUpdateClawBotReplyRouteUsesIncomingWeixinPeer(t *testing.T) {
 	}
 }
 
-func TestUpdateClawBotReplyRouteDoesNotTargetBotItself(t *testing.T) {
+func TestUpdateClawBotReplyContextDoesNotTargetBotItself(t *testing.T) {
 	binding := &ClawBotBinding{BotID: "bot-id", WeixinUserID: "owner-id"}
-	updateClawBotReplyRoute(binding, clawbot.Message{MessageType: 1, FromUserID: "bot-id", ContextToken: "context"})
+	updateClawBotReplyContext(binding, clawbot.Message{MessageType: 1, FromUserID: "bot-id", ContextToken: "context"})
 	if binding.WeixinUserID != "owner-id" {
 		t.Fatalf("reply peer changed to bot ID: %q", binding.WeixinUserID)
 	}
@@ -36,10 +36,10 @@ func TestUpdateClawBotReplyRouteDoesNotTargetBotItself(t *testing.T) {
 	}
 }
 
-func TestUpdateClawBotReplyRouteIgnoresSystemAndOutboundEvents(t *testing.T) {
+func TestUpdateClawBotReplyContextIgnoresSystemAndOutboundEvents(t *testing.T) {
 	binding := &ClawBotBinding{BotID: "bot-id", WeixinUserID: "owner-id", ContextToken: "valid-context"}
 	for _, messageType := range []int{0, 2, 3} {
-		updateClawBotReplyRoute(binding, clawbot.Message{
+		updateClawBotReplyContext(binding, clawbot.Message{
 			MessageType:  messageType,
 			FromUserID:   "receipt-or-system-id",
 			ContextToken: "invalid-context",

@@ -260,7 +260,7 @@ func (m *clawBotManager) monitor(ctx context.Context, accountID string) {
 			current.UpdatesBuffer = updates.Buffer
 		}
 		for _, incoming := range updates.Messages {
-			updateClawBotReplyRoute(current, incoming)
+			updateClawBotReplyContext(current, incoming)
 			if incoming.MessageType != 1 {
 				continue
 			}
@@ -311,15 +311,13 @@ func (m *clawBotManager) monitor(ctx context.Context, accountID string) {
 	}
 }
 
-// updateClawBotReplyRoute learns the actual Weixin peer from real inbound chat
-// messages only. getupdates also returns system events and outbound receipts;
-// their routing fields must never replace the user's reply route.
-func updateClawBotReplyRoute(binding *ClawBotBinding, incoming clawbot.Message) {
+// updateClawBotReplyContext stores only the conversation token from a real
+// inbound message. The send target must remain the ilink_user_id returned by
+// QR confirmation: some iLink lanes expose a different from_user_id in
+// getupdates which is readable but cannot be used as a sendmessage target.
+func updateClawBotReplyContext(binding *ClawBotBinding, incoming clawbot.Message) {
 	if binding == nil || incoming.MessageType != 1 {
 		return
-	}
-	if peer := strings.TrimSpace(incoming.FromUserID); peer != "" && peer != binding.BotID {
-		binding.WeixinUserID = peer
 	}
 	if token := strings.TrimSpace(incoming.ContextToken); token != "" {
 		binding.ContextToken = token
