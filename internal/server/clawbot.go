@@ -227,6 +227,27 @@ func (m *clawBotManager) startMonitor(accountID string) {
 }
 
 func (m *clawBotManager) monitor(ctx context.Context, accountID string) {
+	m.mu.RLock()
+	initial := m.bindings[accountID]
+	if initial == nil || initial.Status != "bound" {
+		m.mu.RUnlock()
+		return
+	}
+	credentials := clawbot.Credentials{BaseURL: initial.BaseURL, Token: initial.BotToken}
+	m.mu.RUnlock()
+	if err := m.client.NotifyStart(ctx, credentials); err != nil && ctx.Err() == nil {
+		m.setError(accountID, "启动微信消息通道失败："+err.Error(), "bound")
+		if m.logger != nil {
+			m.logger.Printf("启动微信 ClawBot 通道失败 account=%s: %v", accountID, err)
+		}
+	}
+	defer func() {
+		stopContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := m.client.NotifyStop(stopContext, credentials); err != nil && m.logger != nil {
+			m.logger.Printf("停止微信 ClawBot 通道失败 account=%s: %v", accountID, err)
+		}
+	}()
 	backoff := time.Second
 	for ctx.Err() == nil {
 		m.mu.RLock()
@@ -311,17 +332,28 @@ func (m *clawBotManager) monitor(ctx context.Context, accountID string) {
 	}
 }
 
-// updateClawBotReplyContext stores only the conversation token from a real
-// inbound message. The send target must remain the ilink_user_id returned by
-// QR confirmation: some iLink lanes expose a different from_user_id in
-// getupdates which is readable but cannot be used as a sendmessage target.
+// updateClawBotReplyContext keeps the context token and its peer together.
+// Mixing a fresh context_token with the QR-confirmation ilink_user_id can make
+// sendmessage return success while silently delivering nothing.
 func updateClawBotReplyContext(binding *ClawBotBinding, incoming clawbot.Message) {
 	if binding == nil || incoming.MessageType != 1 {
 		return
 	}
-	if token := strings.TrimSpace(incoming.ContextToken); token != "" {
+	from := strings.TrimSpace(incoming.FromUserID)
+	token := strings.TrimSpace(incoming.ContextToken)
+	if from != "" && from != strings.TrimSpace(binding.BotID) {
+		binding.ReplyUserID = from
+	}
+	if token != "" {
 		binding.ContextToken = token
 	}
+}
+
+func clawBotSendTarget(binding ClawBotBinding) string {
+	if target := strings.TrimSpace(binding.ReplyUserID); target != "" && target != strings.TrimSpace(binding.BotID) {
+		return target
+	}
+	return strings.TrimSpace(binding.WeixinUserID)
 }
 
 func (m *clawBotManager) cacheIncomingMedia(ctx context.Context, accountID string, message *ClawBotMessage, candidates ...clawbot.Media) {
@@ -402,7 +434,7 @@ func (m *clawBotManager) sendText(accountID, text string) error {
 	}
 	binding := *source
 	m.mu.RUnlock()
-	err := m.client.SendText(context.Background(), clawbot.Credentials{BaseURL: binding.BaseURL, Token: binding.BotToken}, binding.WeixinUserID, binding.ContextToken, text)
+	err := m.client.SendText(context.Background(), clawbot.Credentials{BaseURL: binding.BaseURL, Token: binding.BotToken}, clawBotSendTarget(binding), binding.ContextToken, text)
 	if err != nil {
 		m.setError(accountID, err.Error(), "bound")
 		return err
@@ -428,7 +460,7 @@ func (m *clawBotManager) sendMedia(accountID, fileName, mimeType string, data []
 	binding := *source
 	m.mu.RUnlock()
 	image := strings.HasPrefix(strings.ToLower(mimeType), "image/")
-	err := m.client.SendMedia(context.Background(), clawbot.Credentials{BaseURL: binding.BaseURL, Token: binding.BotToken}, binding.WeixinUserID, binding.ContextToken, fileName, data, image)
+	err := m.client.SendMedia(context.Background(), clawbot.Credentials{BaseURL: binding.BaseURL, Token: binding.BotToken}, clawBotSendTarget(binding), binding.ContextToken, fileName, data, image)
 	if err != nil {
 		m.setError(accountID, err.Error(), "bound")
 		return err
@@ -496,13 +528,13 @@ func (m *clawBotManager) forwardIncoming(accountID string, message ChatMessage, 
 			}
 		}
 		if err == nil && len(data) != 0 {
-			err = m.client.SendText(ctx, credentials, binding.WeixinUserID, binding.ContextToken, prefix)
+			err = m.client.SendText(ctx, credentials, clawBotSendTarget(binding), binding.ContextToken, prefix)
 			if err == nil {
 				fileName := message.FileName
 				if fileName == "" && message.Kind == ChatMessageKindImage {
 					fileName = "TinyChatGo-image.png"
 				}
-				err = m.client.SendMedia(ctx, credentials, binding.WeixinUserID, binding.ContextToken, fileName, bytes.Clone(data), message.Kind == ChatMessageKindImage)
+				err = m.client.SendMedia(ctx, credentials, clawBotSendTarget(binding), binding.ContextToken, fileName, bytes.Clone(data), message.Kind == ChatMessageKindImage)
 			}
 		} else if err == nil {
 			err = errors.New("聊天附件内容不可用")
@@ -512,7 +544,7 @@ func (m *clawBotManager) forwardIncoming(accountID string, message ChatMessage, 
 		if message.Kind == ChatMessageKindCode {
 			content = "[代码]\n" + content
 		}
-		err = m.client.SendText(ctx, credentials, binding.WeixinUserID, binding.ContextToken, prefix+content)
+		err = m.client.SendText(ctx, credentials, clawBotSendTarget(binding), binding.ContextToken, prefix+content)
 	}
 	if err != nil {
 		m.logger.Printf("微信 ClawBot 转发失败 account=%s: %v", accountID, err)

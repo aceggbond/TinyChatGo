@@ -274,11 +274,15 @@ type AccountPersistence interface {
 // official Weixin ClawBot connection. BotToken is a credential and must never
 // be returned by browser or administrator APIs.
 type ClawBotBinding struct {
-	AccountID      string           `json:"accountId"`
-	Status         string           `json:"status"`
-	BotToken       string           `json:"botToken,omitempty"`
-	BotID          string           `json:"botId,omitempty"`
-	WeixinUserID   string           `json:"weixinUserId,omitempty"`
+	AccountID    string `json:"accountId"`
+	Status       string `json:"status"`
+	BotToken     string `json:"botToken,omitempty"`
+	BotID        string `json:"botId,omitempty"`
+	WeixinUserID string `json:"weixinUserId,omitempty"`
+	// ReplyUserID is the peer from_user_id paired with ContextToken by the
+	// latest real inbound message. Some iLink accounts cannot deliver replies
+	// when the QR-confirmation ilink_user_id is mixed with a newer context.
+	ReplyUserID    string           `json:"replyUserId,omitempty"`
 	BaseURL        string           `json:"baseUrl,omitempty"`
 	QRCode         string           `json:"qrCode,omitempty"`
 	QRCodeURL      string           `json:"qrCodeUrl,omitempty"`

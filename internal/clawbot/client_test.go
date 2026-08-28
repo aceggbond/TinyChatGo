@@ -114,6 +114,46 @@ func TestSendTextIncludesContextToken(t *testing.T) {
 	}
 }
 
+func TestSendTextRejectsNonzeroWeixinErrorCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ret":0,"errcode":410,"errmsg":"invalid route"}`))
+	}))
+	defer server.Close()
+	if err := (&Client{}).SendText(context.Background(), Credentials{BaseURL: server.URL, Token: "secret"}, "wx-user", "context", "test"); err == nil {
+		t.Fatal("nonzero errcode was accepted as successful delivery")
+	}
+}
+
+func TestNotifyLifecycleUsesOfficialEndpoints(t *testing.T) {
+	seen := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen[r.URL.Path]++
+		_, _ = w.Write([]byte(`{"ret":0}`))
+	}))
+	defer server.Close()
+	client := &Client{}
+	credentials := Credentials{BaseURL: server.URL, Token: "secret"}
+	if err := client.NotifyStart(context.Background(), credentials); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.NotifyStop(context.Background(), credentials); err != nil {
+		t.Fatal(err)
+	}
+	if seen["/ilink/bot/msg/notifystart"] != 1 || seen["/ilink/bot/msg/notifystop"] != 1 {
+		t.Fatalf("lifecycle endpoints = %#v", seen)
+	}
+}
+
+func TestSendTextRequiresConversationContext(t *testing.T) {
+	client := &Client{}
+	if err := client.SendText(context.Background(), Credentials{}, "wx-user", "", "test"); err == nil {
+		t.Fatal("missing context token was accepted")
+	}
+	if err := client.SendText(context.Background(), Credentials{}, "", "context", "test"); err == nil {
+		t.Fatal("missing target was accepted")
+	}
+}
+
 func TestSendMediaUsesWeixinOutboundAESKeyEncoding(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

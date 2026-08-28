@@ -134,6 +134,29 @@ func (c *Client) GetUpdates(ctx context.Context, credentials Credentials, buffer
 	return result, err
 }
 
+func (c *Client) NotifyStart(ctx context.Context, credentials Credentials) error {
+	return c.notifyLifecycle(ctx, credentials, "ilink/bot/msg/notifystart")
+}
+
+func (c *Client) NotifyStop(ctx context.Context, credentials Credentials) error {
+	return c.notifyLifecycle(ctx, credentials, "ilink/bot/msg/notifystop")
+}
+
+func (c *Client) notifyLifecycle(ctx context.Context, credentials Credentials, endpoint string) error {
+	var result struct {
+		Ret       int    `json:"ret"`
+		ErrorCode int    `json:"errcode"`
+		Error     string `json:"errmsg"`
+	}
+	if err := c.request(ctx, http.MethodPost, credentials.BaseURL, endpoint, credentials.Token, map[string]any{"base_info": baseInfo()}, &result, 10*time.Second); err != nil {
+		return err
+	}
+	if result.Ret != 0 || result.ErrorCode != 0 {
+		return fmt.Errorf("微信通道通知失败 ret=%d errcode=%d: %s", result.Ret, result.ErrorCode, result.Error)
+	}
+	return nil
+}
+
 func (c *Client) SendText(ctx context.Context, credentials Credentials, to, contextToken, text string) error {
 	item := MessageItem{Type: 1, Text: &TextItem{Text: text}}
 	return c.sendItem(ctx, credentials, to, contextToken, item)
@@ -220,20 +243,27 @@ func decodeMediaAESKey(value string) ([]byte, error) {
 }
 
 func (c *Client) sendItem(ctx context.Context, credentials Credentials, to, contextToken string, item MessageItem) error {
+	if strings.TrimSpace(to) == "" {
+		return errors.New("微信发送目标为空，请先从微信端发送一条消息")
+	}
+	if strings.TrimSpace(contextToken) == "" {
+		return errors.New("微信会话上下文为空，请先从微信端发送一条消息")
+	}
 	clientID := randomHex(16)
 	body := map[string]any{"msg": Message{
 		FromUserID: "", ToUserID: to, ClientID: "tinychatgo-" + clientID,
 		MessageType: 2, MessageState: 2, Items: []MessageItem{item}, ContextToken: contextToken,
 	}, "base_info": baseInfo()}
 	var result struct {
-		Ret   int    `json:"ret"`
-		Error string `json:"errmsg"`
+		Ret       int    `json:"ret"`
+		ErrorCode int    `json:"errcode"`
+		Error     string `json:"errmsg"`
 	}
 	if err := c.request(ctx, http.MethodPost, credentials.BaseURL, "ilink/bot/sendmessage", credentials.Token, body, &result, 20*time.Second); err != nil {
 		return err
 	}
-	if result.Ret != 0 {
-		return fmt.Errorf("微信发送失败 ret=%d: %s", result.Ret, result.Error)
+	if result.Ret != 0 || result.ErrorCode != 0 {
+		return fmt.Errorf("微信发送失败 ret=%d errcode=%d: %s", result.Ret, result.ErrorCode, result.Error)
 	}
 	return nil
 }
